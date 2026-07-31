@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+
+.env
+*.ecfg
+*.db
+*.sqlite
+*.sqlite3
+
+output/*
+!output/.gitkeep
+
+.vscode/settings.json
