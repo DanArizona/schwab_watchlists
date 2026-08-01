@@ -11,3 +11,4 @@ output/*
 !output/.gitkeep
 
 .vscode/settings.json
+.pytest_cache/
