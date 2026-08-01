@@ -45,6 +45,14 @@ from mb_tools.schwab_secure.client import (
 )
 from mb_tools.schwab_secure.config import SecureSchwabConfigError
 
+from candidate_filters import (
+    FilterResult,
+    FilterSettings,
+    MissingFieldPolicy,
+    filter_candidates,
+)
+from candidate_model import SymbolCandidate
+
 
 DEFAULT_ECFG_NAME = "secure_schwabdev.ecfg"
 
@@ -153,6 +161,84 @@ def deduplicate_records(
         result.append(record)
 
     return result
+
+
+def optional_float(value: Any) -> float | None:
+    """Convert a numeric value to float, excluding booleans."""
+
+    if isinstance(value, bool):
+        return None
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    return None
+
+
+def optional_int(value: Any) -> int | None:
+    """Convert a numeric value to int, excluding booleans."""
+
+    if isinstance(value, bool):
+        return None
+
+    if isinstance(value, (int, float)):
+        return int(value)
+
+    return None
+
+
+def mover_record_to_candidate(
+    record: Mapping[str, Any],
+    *,
+    source_rank: int,
+    as_of: datetime,
+) -> SymbolCandidate:
+    """
+    Convert one Schwab mover record into the common candidate model.
+
+    Schwab returns netPercentChange as a decimal ratio, so it is multiplied
+    by 100 before being stored as percentage points.
+    """
+
+    raw_symbol = record.get("symbol")
+
+    if not isinstance(raw_symbol, str) or not raw_symbol.strip():
+        raise ValueError("Schwab mover record does not contain a symbol.")
+
+    raw_description = record.get("description")
+    description = (
+        raw_description.strip()
+        if isinstance(raw_description, str) and raw_description.strip()
+        else None
+    )
+
+    percent_ratio = optional_float(record.get("netPercentChange"))
+    percent_change = (
+        percent_ratio * 100.0
+        if percent_ratio is not None
+        else None
+    )
+
+    return SymbolCandidate(
+        symbol=raw_symbol,
+        source="schwab_movers",
+        as_of=as_of,
+
+        # The movers response does not identify the market session.
+        session=None,
+
+        last_price=optional_float(record.get("lastPrice")),
+        regular_close=None,
+        percent_change=percent_change,
+
+        volume=optional_int(record.get("volume")),
+        trades=optional_int(record.get("trades")),
+        market_share_percent=optional_float(record.get("marketShare")),
+
+        description=description,
+        source_rank=source_rank,
+        raw=dict(record),
+    )
 
 
 def sort_mover_records(
@@ -344,6 +430,29 @@ def print_mover_summary(
     print("=" * 104)
 
 
+def print_rejection_summary(result: FilterResult) -> None:
+    """Print rejected candidates and their filtering reasons."""
+
+    print()
+    print("Filter decisions")
+    print("=" * 104)
+
+    if not result.rejected:
+        print("No candidates were rejected.")
+        print("=" * 104)
+        return
+
+    for decision in result.rejected:
+        reasons = "; ".join(decision.reasons)
+
+        print(
+            f"{decision.candidate.symbol:<12}"
+            f"{reasons}"
+        )
+
+    print("=" * 104)
+
+
 def save_outputs(
     *,
     output_dir: Path,
@@ -352,6 +461,8 @@ def save_outputs(
     sort: str,
     frequency: int,
     records: Sequence[Mapping[str, Any]],
+    filter_settings: FilterSettings,
+    filter_result: FilterResult,
 ) -> tuple[Path, Path, Path]:
     """Save raw JSON, extracted symbols, and run metadata."""
 
@@ -400,6 +511,31 @@ def save_outputs(
         "watchlist_action": None,
         "raw_response_file": str(raw_path),
         "symbols_file": str(symbols_path),
+        "api_record_count": len(filter_result.decisions),
+        "accepted_count": len(filter_result.accepted),
+        "rejected_count": len(filter_result.rejected),
+        "filters": {
+            "min_price": filter_settings.min_price,
+            "max_price": filter_settings.max_price,
+            "min_volume": filter_settings.min_volume,
+            "min_percent_change": (
+                filter_settings.min_percent_change
+            ),
+            "max_percent_change": (
+                filter_settings.max_percent_change
+            ),
+            "max_results": filter_settings.max_results,
+            "missing_field_policy": (
+                filter_settings.missing_field_policy.value
+            ),
+        },
+        "rejections": [
+            {
+                "symbol": decision.candidate.symbol,
+                "reasons": list(decision.reasons),
+            }
+            for decision in filter_result.rejected
+        ],
     }
 
     with run_path.open("w", encoding="utf-8") as output_file:
@@ -451,8 +587,59 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Maximum number of extracted symbols to display and save. "
-            "Default: retain all returned symbols."
+            "Maximum number of accepted candidates after filtering. "
+            "Default: no additional limit."
+        ),
+    )
+
+    parser.add_argument(
+        "--min-price",
+        type=float,
+        default=None,
+        help="Minimum last price. Default: no minimum.",
+    )
+
+    parser.add_argument(
+        "--max-price",
+        type=float,
+        default=None,
+        help="Maximum last price. Default: no maximum.",
+    )
+
+    parser.add_argument(
+        "--min-volume",
+        type=int,
+        default=None,
+        help="Minimum mover volume. Default: no minimum.",
+    )
+
+    parser.add_argument(
+        "--min-percent-change",
+        type=float,
+        default=None,
+        help=(
+            "Minimum percentage change in percentage points. "
+            "For example, 5 means 5%%."
+        ),
+    )
+
+    parser.add_argument(
+        "--max-percent-change",
+        type=float,
+        default=None,
+        help=(
+            "Maximum percentage change in percentage points. "
+            "For example, 20 means 20%%."
+        ),
+    )
+
+    parser.add_argument(
+        "--missing-field-policy",
+        choices=tuple(policy.value for policy in MissingFieldPolicy),
+        default=MissingFieldPolicy.REJECT.value,
+        help=(
+            "Behavior when an enabled filter needs a missing value. "
+            "Default: reject."
         ),
     )
 
@@ -486,8 +673,24 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
-    if args.limit is not None and args.limit < 1:
-        print("ERROR: --limit must be at least 1.", file=sys.stderr)
+    # if args.limit is not None and args.limit < 1:
+    #     print("ERROR: --limit must be at least 1.", file=sys.stderr)
+    #     return 2
+
+    try:
+        filter_settings = FilterSettings(
+            min_price=args.min_price,
+            max_price=args.max_price,
+            min_volume=args.min_volume,
+            min_percent_change=args.min_percent_change,
+            max_percent_change=args.max_percent_change,
+            max_results=args.limit,
+            missing_field_policy=MissingFieldPolicy(
+                args.missing_field_policy
+            ),
+        )
+    except ValueError as exc:
+        print(f"ERROR: Invalid filter settings: {exc}", file=sys.stderr)
         return 2
 
     if args.timeout < 1:
@@ -508,6 +711,34 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(f"Timeout          : {args.timeout} seconds")
     print("Watchlist action : NONE")
+    print()
+    print("Filters")
+    print("-" * 72)
+    print(
+        f"Minimum price    : "
+        f"{filter_settings.min_price if filter_settings.min_price is not None else 'none'}"
+    )
+    print(
+        f"Maximum price    : "
+        f"{filter_settings.max_price if filter_settings.max_price is not None else 'none'}"
+    )
+    print(
+        f"Minimum volume   : "
+        f"{filter_settings.min_volume if filter_settings.min_volume is not None else 'none'}"
+    )
+    print(
+        f"Minimum change   : "
+        f"{filter_settings.min_percent_change if filter_settings.min_percent_change is not None else 'none'}"
+    )
+    print(
+        f"Maximum change   : "
+        f"{filter_settings.max_percent_change if filter_settings.max_percent_change is not None else 'none'}"
+    )
+    print(
+        f"Missing fields   : "
+        f"{filter_settings.missing_field_policy.value}"
+    )
+
 
     if not ecfg_path.is_file():
         print(
@@ -557,19 +788,49 @@ def main(argv: Sequence[str] | None = None) -> int:
         discovered_records = find_symbol_records(data)
         api_records = deduplicate_records(discovered_records)
 
-        records = sort_mover_records(
+        ordered_records = sort_mover_records(
             api_records,
             args.sort,
         )
 
-        if args.limit is not None:
-            records = records[: args.limit]
+        candidate_time = datetime.now().astimezone()
+
+        candidates = [
+            mover_record_to_candidate(
+                record,
+                source_rank=index,
+                as_of=candidate_time,
+            )
+            for index, record in enumerate(
+                ordered_records,
+                start=1,
+            )
+        ]
+
+        filter_result = filter_candidates(
+            candidates,
+            filter_settings,
+        )
+
+        accepted_symbols = {
+            candidate.symbol
+            for candidate in filter_result.accepted
+        }
+
+        records = [
+            record
+            for record in ordered_records
+            if str(record.get("symbol", "")).strip().upper()
+            in accepted_symbols
+        ]
 
         print(f"API records      : {len(api_records)}")
-        print(f"Selected records : {len(records)}")
+        print(f"Accepted records : {len(filter_result.accepted)}")
+        print(f"Rejected records : {len(filter_result.rejected)}")
         print(f"Local ordering   : {args.sort}")
 
         print_mover_summary(records)
+        print_rejection_summary(filter_result)
 
         output_dir = args.output_dir.expanduser().resolve()
 
@@ -580,6 +841,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             sort=args.sort,
             frequency=args.frequency,
             records=records,
+            filter_settings=filter_settings,
+            filter_result=filter_result,
         )
 
         print()
