@@ -39,6 +39,8 @@ The following capabilities are working:
 * Dry-run submission by default
 * Explicit safeguards before live submission
 * Automated tests for models, filters, pipelines, outputs, source conversion, and Watchlist submission
+* Saved Schwab Movers response replay without API authentication
+* Watchlist dry-run from replayed Movers data
 
 Run the current test suite with:
 
@@ -259,6 +261,33 @@ Percentage filter values are expressed in **percentage points**:
 5    means 5%
 -10  means -10%
 ```
+
+### 5. Replay a saved Movers response
+
+A previously saved raw Schwab Movers response can be processed without
+contacting Schwab or entering the encrypted-configurationDAQ ^
+    --sort PERCENT_CHANGE_UP ^
+    --min-price 0.50 ^
+    --min-volume 100000000 ^
+    --min-percent-change 1 ^
+    --limit 5
+```
+
+Replay mode uses the current filter and local-ordering implementation.
+
+A Watchlist operation may also be previewed:
+
+```cmd
+python wl_schwab_movers.py ^
+    --replay output\2026-07-31-21-30-53-movers-nasdaq-percent_change_up-raw.json ^
+    --market NASDAQ ^
+    --sort PERCENT_CHANGE_UP ^
+    --limit 5 ^
+    --mode add
+```
+
+Replay data cannot be submitted live. The `--replay` and `--submit`
+options are mutually exclusive.
 
 ## Movers options
 
@@ -647,7 +676,6 @@ The following items are planned or under consideration. They are **not yet imple
 
 ### Near-term
 
-* Saved-response replay mode
 * Repeatable Movers integration tests using captured raw JSON
 * First carefully controlled live Movers-to-Watchlist test
 * Improved CLI descriptions and examples

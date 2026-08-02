@@ -5,8 +5,10 @@ This module retrieves Schwab mover records and converts them into the
 source-neutral SymbolCandidate model. It contains no command-line, GUI,
 file-output, or ThinkOrSwim submission logic.
 """
-
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -241,46 +243,36 @@ def mover_record_to_candidate(
     )
 
 
-def fetch_schwab_movers(
-    client: SchwabMoversClient,
+def build_schwab_movers_batch(
+    data: Any,
     *,
     market: str,
     sort_name: str,
     frequency: int,
-    as_of: datetime | None = None,
+    requested_at: datetime | None = None,
+    request_url: str = "",
+    status_code: int = 200,
 ) -> SchwabMoversBatch:
     """
-    Retrieve, validate, order, and normalize one Schwab Movers response.
+    Validate and normalize one raw Schwab Movers JSON document.
+
+    This function is shared by live API retrieval and saved-response replay.
     """
 
     if market not in MARKET_CHOICES:
-        raise ValueError(f"Unsupported mover market: {market}")
+        raise ValueError(
+            f"Unsupported mover market: {market}"
+        )
 
     if sort_name not in SORT_CHOICES:
-        raise ValueError(f"Unsupported mover sort: {sort_name}")
+        raise ValueError(
+            f"Unsupported mover sort: {sort_name}"
+        )
 
     if frequency not in FREQUENCY_CHOICES:
-        raise ValueError(f"Unsupported mover frequency: {frequency}")
-
-    requested_at = as_of or datetime.now().astimezone()
-
-    response = client.movers(
-        symbol=market,
-        sort=sort_name,
-        frequency=frequency,
-    )
-
-    request_url = str(getattr(response, "url", ""))
-    status_code = int(response.status_code)
-
-    response.raise_for_status()
-
-    try:
-        data = response.json()
-    except ValueError as exc:
         raise ValueError(
-            f"Schwab Movers response was not valid JSON: {exc}"
-        ) from exc
+            f"Unsupported mover frequency: {frequency}"
+        )
 
     if not isinstance(data, Mapping):
         raise ValueError(
@@ -288,8 +280,15 @@ def fetch_schwab_movers(
             "as its top-level JSON value."
         )
 
+    batch_time = (
+        requested_at
+        or datetime.now().astimezone()
+    )
+
     discovered_records = find_symbol_records(data)
-    unique_records = deduplicate_records(discovered_records)
+    unique_records = deduplicate_records(
+        discovered_records
+    )
 
     ordered_records = sort_mover_records(
         unique_records,
@@ -300,7 +299,7 @@ def fetch_schwab_movers(
         mover_record_to_candidate(
             record,
             source_rank=index,
-            as_of=requested_at,
+            as_of=batch_time,
         )
         for index, record in enumerate(
             ordered_records,
@@ -312,10 +311,95 @@ def fetch_schwab_movers(
         market=market,
         sort_name=sort_name,
         frequency=frequency,
-        requested_at=requested_at,
+        requested_at=batch_time,
         request_url=request_url,
         status_code=status_code,
         records=tuple(ordered_records),
         candidates=candidates,
         raw_data=data,
+    )
+
+
+def load_schwab_movers_replay(
+    path: Path,
+    *,
+    market: str,
+    sort_name: str,
+    frequency: int,
+    as_of: datetime | None = None,
+) -> SchwabMoversBatch:
+    """Load and normalize a previously saved Movers JSON response."""
+
+    resolved_path = path.expanduser().resolve()
+
+    try:
+        with resolved_path.open(
+            "r",
+            encoding="utf-8",
+        ) as input_file:
+            data = json.load(input_file)
+
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Saved Schwab Movers response is not valid JSON: "
+            f"{resolved_path}: {exc}"
+        ) from exc
+
+    except OSError as exc:
+        raise ValueError(
+            f"Could not read saved Schwab Movers response "
+            f"{resolved_path}: {exc}"
+        ) from exc
+
+    return build_schwab_movers_batch(
+        data,
+        market=market,
+        sort_name=sort_name,
+        frequency=frequency,
+        requested_at=as_of,
+        request_url=str(resolved_path),
+        status_code=0,
+    )
+
+
+def fetch_schwab_movers(
+    client: SchwabMoversClient,
+    *,
+    market: str,
+    sort_name: str,
+    frequency: int,
+    as_of: datetime | None = None,
+) -> SchwabMoversBatch:
+    """Retrieve and normalize one live Schwab Movers response."""
+
+    response = client.movers(
+        symbol=market,
+        sort=sort_name,
+        frequency=frequency,
+    )
+
+    request_url = str(
+        getattr(response, "url", "")
+    )
+    status_code = int(response.status_code)
+
+    response.raise_for_status()
+
+    try:
+        data = response.json()
+
+    except ValueError as exc:
+        raise ValueError(
+            f"Schwab Movers response was not valid JSON: "
+            f"{exc}"
+        ) from exc
+
+    return build_schwab_movers_batch(
+        data,
+        market=market,
+        sort_name=sort_name,
+        frequency=frequency,
+        requested_at=as_of,
+        request_url=request_url,
+        status_code=status_code,
     )

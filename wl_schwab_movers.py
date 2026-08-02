@@ -1,30 +1,15 @@
 """
-Retrieve market movers from the Charles Schwab API.
+Retrieve, filter, save, and optionally submit Schwab market movers.
 
-This first version is API-only. It does not submit symbols to ThinkOrSwim.
+Input may come from the live Charles Schwab Movers endpoint or from a
+previously saved raw Movers JSON response.
 
-Examples
---------
-NASDAQ percentage gainers:
+ThinkOrSwim Watchlist modification is guarded:
 
-    python wl_schwab_movers.py
-
-NYSE percentage losers:
-
-    python wl_schwab_movers.py ^
-        --market NYSE ^
-        --sort PERCENT_CHANGE_DOWN
-
-Request NASDAQ symbols ordered by volume:
-
-    python wl_schwab_movers.py ^
-        --market NASDAQ ^
-        --sort VOLUME ^
-        --frequency 5
-
-Limit the displayed and saved symbol list:
-
-    python wl_schwab_movers.py --limit 20
+- no Watchlist mode is selected by default;
+- --mode without --submit produces a dry run;
+- live publication requires both --mode and --submit;
+- replayed historical data cannot be submitted live.
 """
 
 from __future__ import annotations
@@ -52,12 +37,25 @@ from candidate_pipeline import (
     CandidatePipelineResult,
     run_candidate_pipeline,
 )
+
+
+
+
+
+
 from schwab_movers_source import (
     FREQUENCY_CHOICES,
     MARKET_CHOICES,
     SORT_CHOICES,
     fetch_schwab_movers,
+    load_schwab_movers_replay,
 )
+
+
+
+
+
+
 from candidate_outputs import write_candidate_outputs
 from watchlist_submission import (
     COMMAND_FOR_MODE,
@@ -274,8 +272,9 @@ def print_rejection_summary(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Retrieve Schwab market movers and save the returned data. "
-            "This version does not modify ThinkOrSwim."
+            "Retrieve or replay Schwab market movers, apply filters, "
+            "save results, and optionally preview or publish a guarded "
+            "ThinkOrSwim Watchlist operation."
         )
     )
 
@@ -301,6 +300,18 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Schwab movers frequency selector. "
             "Allowed values: 0, 1, 5, 10, 30, or 60. Default: 5."
+        ),
+    )
+
+    parser.add_argument(
+        "--replay",
+        type=Path,
+        default=None,
+        metavar="RAW_JSON",
+        help=(
+            "Process a previously saved raw Movers JSON response "
+            "instead of contacting Schwab. Replay supports output "
+            "and Watchlist dry-run, but not live submission."
         ),
     )
 
@@ -447,12 +458,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
+    if args.replay is not None and args.submit:
+        print(
+            "ERROR: --submit cannot be used with "
+            "--replay. Replayed market data may only "
+            "produce a Watchlist dry run.",
+            file=sys.stderr,
+        )
+        return 2
+
     if args.wait < 0:
         print(
             "ERROR: --wait cannot be negative.",
             file=sys.stderr,
         )
         return 2
+
+    replay_path: Path | None = None
+
+    if args.replay is not None:
+        replay_path = (
+            args.replay
+            .expanduser()
+            .resolve()
+        )
+
+        if not replay_path.is_file():
+            print(
+                f"ERROR: Replay file does not exist: "
+                f"{replay_path}",
+                file=sys.stderr,
+            )
+            return 2
 
     try:
         filter_settings = FilterSettings(
@@ -474,11 +511,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("ERROR: --timeout must be at least 1.", file=sys.stderr)
         return 2
 
-    ecfg_path = resolve_ecfg_path(args.ecfg).resolve()
+    # ecfg_path = resolve_ecfg_path(args.ecfg).resolve()
+    ecfg_path: Path | None = None
 
-    print("Schwab movers probe")
+    if replay_path is None:
+        ecfg_path = (
+            resolve_ecfg_path(args.ecfg)
+            .resolve()
+        )
+
+    # print("Schwab movers probe")
+    print("Schwab movers")
     print("=" * 72)
-    print(f"Encrypted config : {ecfg_path}")
+    # print(f"Encrypted config : {ecfg_path}")
+    if replay_path is None:
+        print("Input source      : LIVE SCHWAB API")
+        print(f"Encrypted config : {ecfg_path}")
+    else:
+        print("Input source      : SAVED RESPONSE REPLAY")
+        print(f"Replay file      : {replay_path}")
     print(f"Market           : {args.market}")
     print(f"Sort             : {args.sort}")
     print(f"Frequency        : {args.frequency}")
@@ -487,7 +538,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"{args.limit if args.limit is not None else 'all returned symbols'}"
     )
     print(f"Timeout          : {args.timeout} seconds")
-    # print("Watchlist action : NONE")
     if args.mode is None:
         watchlist_action_text = "NONE"
     else:
@@ -536,41 +586,105 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
 
-    if not ecfg_path.is_file():
+    # if not ecfg_path.is_file():
+    if (
+        ecfg_path is not None
+        and not ecfg_path.is_file()
+    ):
         print(
             f"ERROR: Schwab encrypted configuration does not exist: {ecfg_path}",
             file=sys.stderr,
         )
         return 2
 
-    password = getpass.getpass("ecfg password: ")
+    # password = getpass.getpass("ecfg password: ")
 
     client = None
 
     try:
+# -------------------------------------------------------------------------------
         print()
-        print("Creating Schwab client...")
 
-        client = make_secure_schwab_client(
-            ecfg_path,
-            password,
-            timeout=args.timeout,
-        )
+        if replay_path is not None:
+            print(
+                "Loading saved Schwab Movers response..."
+            )
 
-        print(f"Client created   : {type(client).__name__}")
-        print("Requesting movers...")
+            batch = load_schwab_movers_replay(
+                replay_path,
+                market=args.market,
+                sort_name=args.sort,
+                frequency=args.frequency,
+            )
 
-        batch = fetch_schwab_movers(
-            client,
-            market=args.market,
-            sort_name=args.sort,
-            frequency=args.frequency,
-        )
+            print(
+                f"Replay loaded    : "
+                f"{replay_path}"
+            )
 
-        print(f"Request URL      : {batch.request_url}")
-        print(f"HTTP status      : {batch.status_code}")
+        else:
+            assert ecfg_path is not None
+
+            password = getpass.getpass(
+                "ecfg password: "
+            )
+
+            print()
+            print("Creating Schwab client...")
+
+            client = make_secure_schwab_client(
+                ecfg_path,
+                password,
+                timeout=args.timeout,
+            )
+
+            print(
+                f"Client created   : "
+                f"{type(client).__name__}"
+            )
+            print("Requesting movers...")
+
+            batch = fetch_schwab_movers(
+                client,
+                market=args.market,
+                sort_name=args.sort,
+                frequency=args.frequency,
+            )
+
+            print(
+                f"Request URL      : "
+                f"{batch.request_url}"
+            )
+            print(
+                f"HTTP status      : "
+                f"{batch.status_code}"
+            )
 
         data = batch.raw_data
+
+        # print()
+        # print("Creating Schwab client...")
+
+        # client = make_secure_schwab_client(
+        #     ecfg_path,
+        #     password,
+        #     timeout=args.timeout,
+        # )
+
+        # print(f"Client created   : {type(client).__name__}")
+        # print("Requesting movers...")
+
+        # batch = fetch_schwab_movers(
+        #     client,
+        #     market=args.market,
+        #     sort_name=args.sort,
+        #     frequency=args.frequency,
+        # )
+
+        # print(f"Request URL      : {batch.request_url}")
+        # print(f"HTTP status      : {batch.status_code}")
+
+        # data = batch.raw_data
 
         print_top_level_summary(data)
 
@@ -611,11 +725,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         market_slug = args.market.lower().replace("$", "")
         sort_slug = args.sort.lower()
+        replay_suffix = (
+            "-replay"
+            if replay_path is not None
+            else ""
+        )
 
+        # output_stem = (
+        #     f"{output_timestamp}"
+        #     f"-movers-{market_slug}-{sort_slug}"
+        # )
         output_stem = (
             f"{output_timestamp}"
             f"-movers-{market_slug}-{sort_slug}"
+            f"{replay_suffix}"
         )
+
 
         output_paths = write_candidate_outputs(
             output_dir=output_dir,
@@ -626,8 +751,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "market": args.market,
                 "sort": args.sort,
                 "frequency": args.frequency,
-                "request_url": batch.request_url,
-                "http_status": batch.status_code,
+
+                "input_mode": (
+                    "replay"
+                    if replay_path is not None
+                    else "api"
+                ),
+                "replay_file": (
+                    str(replay_path)
+                    if replay_path is not None
+                    else None
+                ),
+                "request_url": (
+                    batch.request_url
+                    if replay_path is None
+                    else None
+                ),
+                "http_status": (
+                    batch.status_code
+                    if replay_path is None
+                    else None
+                ),
+                # "request_url": batch.request_url,
+                # "http_status": batch.status_code,
+
                 "watchlist_action": (
                     COMMAND_FOR_MODE[args.mode]
                     if args.mode is not None
@@ -651,7 +798,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "No Watchlist command was published."
             )
             print(
-                "Schwab movers probe completed "
+                "Schwab movers completed "
                 "successfully."
             )
             return 0
@@ -746,7 +893,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{submission_result.run_record_path}"
             )
             print(
-                "Schwab movers probe completed "
+                "Schwab movers completed "
                 "successfully."
             )
             return 0
@@ -776,7 +923,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "as processed."
         )
         print(
-            "Schwab movers probe completed "
+            "Schwab movers completed "
             "successfully."
         )
         return 0
@@ -799,7 +946,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     except Exception as exc:
         print(
-            f"ERROR: Schwab movers probe failed: "
+            f"ERROR: Schwab movers failed: "
             f"{type(exc).__name__}: {exc}",
             file=sys.stderr,
         )

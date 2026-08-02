@@ -1,9 +1,11 @@
 from datetime import datetime, timezone
 
 import pytest
-
+import json
+from pathlib import Path
 from schwab_movers_source import (
     fetch_schwab_movers,
+    load_schwab_movers_replay,
     mover_record_to_candidate,
 )
 
@@ -183,6 +185,101 @@ def test_fetch_schwab_movers_rejects_non_dictionary_json() -> None:
     ):
         fetch_schwab_movers(
             client,
+            market="NASDAQ",
+            sort_name="VOLUME",
+            frequency=5,
+        )
+
+
+def test_load_schwab_movers_replay(
+    tmp_path: Path,
+) -> None:
+    replay_path = tmp_path / "saved-movers.json"
+
+    replay_path.write_text(
+        json.dumps(
+            {
+                "screeners": [
+                    {
+                        "symbol": "LOW",
+                        "lastPrice": 2.0,
+                        "netPercentChange": 0.05,
+                        "volume": 100,
+                    },
+                    {
+                        "symbol": "HIGH",
+                        "lastPrice": 4.0,
+                        "netPercentChange": 0.25,
+                        "volume": 200,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    batch = load_schwab_movers_replay(
+        replay_path,
+        market="NASDAQ",
+        sort_name="PERCENT_CHANGE_UP",
+        frequency=5,
+    )
+
+    assert batch.request_url == str(
+        replay_path.resolve()
+    )
+    assert batch.status_code == 0
+
+    assert [
+        candidate.symbol
+        for candidate in batch.candidates
+    ] == [
+        "HIGH",
+        "LOW",
+    ]
+
+    assert (
+        batch.candidates[0].percent_change
+        == pytest.approx(25.0)
+    )
+
+
+def test_replay_rejects_invalid_json(
+    tmp_path: Path,
+) -> None:
+    replay_path = tmp_path / "invalid.json"
+
+    replay_path.write_text(
+        "{this is not valid JSON",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="not valid JSON",
+    ):
+        load_schwab_movers_replay(
+            replay_path,
+            market="NASDAQ",
+            sort_name="VOLUME",
+            frequency=5,
+        )
+
+
+def test_replay_rejects_missing_file(
+    tmp_path: Path,
+) -> None:
+    replay_path = (
+        tmp_path
+        / "does-not-exist.json"
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Could not read saved",
+    ):
+        load_schwab_movers_replay(
+            replay_path,
             market="NASDAQ",
             sort_name="VOLUME",
             frequency=5,
