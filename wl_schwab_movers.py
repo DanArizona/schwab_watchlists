@@ -58,6 +58,7 @@ from schwab_movers_source import (
     SORT_CHOICES,
     fetch_schwab_movers,
 )
+from candidate_outputs import write_candidate_outputs
 
 DEFAULT_ECFG_NAME = "secure_schwabdev.ecfg"
 
@@ -624,20 +625,54 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         output_dir = args.output_dir.expanduser().resolve()
 
-        raw_path, symbols_path, run_path = save_outputs(
-            output_dir=output_dir,
-            data=data,
-            market=args.market,
-            sort=args.sort,
-            frequency=args.frequency,
-            records=records,
-            pipeline_result=pipeline_result,
+        # raw_path, symbols_path, run_path = save_outputs(
+        #     output_dir=output_dir,
+        #     data=data,
+        #     market=args.market,
+        #     sort=args.sort,
+        #     frequency=args.frequency,
+        #     records=records,
+        #     pipeline_result=pipeline_result,
+        # )
+
+        output_timestamp = (
+            datetime.now()
+            .astimezone()
+            .strftime("%Y-%m-%d-%H-%M-%S")
         )
 
+        market_slug = args.market.lower().replace("$", "")
+        sort_slug = args.sort.lower()
+
+        output_stem = (
+            f"{output_timestamp}"
+            f"-movers-{market_slug}-{sort_slug}"
+        )
+
+        output_paths = write_candidate_outputs(
+            output_dir=output_dir,
+            stem=output_stem,
+            raw_data=data,
+            pipeline_result=pipeline_result,
+            extra_run_fields={
+                "market": args.market,
+                "sort": args.sort,
+                "frequency": args.frequency,
+                "request_url": batch.request_url,
+                "http_status": batch.status_code,
+                "watchlist_action": None,
+            },
+        )
+        # ---------------------------------
+
         print()
-        print(f"Raw response     : {raw_path}")
-        print(f"Extracted symbols: {symbols_path}")
-        print(f"Run record       : {run_path}")
+        # print(f"Raw response     : {raw_path}")
+        # print(f"Extracted symbols: {symbols_path}")
+        # print(f"Run record       : {run_path}")
+        print(f"Raw response     : {output_paths.raw_json}")
+        print(f"Extracted symbols: {output_paths.symbols_text}")
+        print(f"Run record       : {output_paths.run_json}")
+        # ---------------------------------
         print()
         print("No Watchlist command was published.")
         print("Schwab movers probe completed successfully.")
