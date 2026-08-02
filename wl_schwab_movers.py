@@ -581,8 +581,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Client created   : {type(client).__name__}")
         print("Requesting movers...")
 
-# --------------------------------------------------------
-
         batch = fetch_schwab_movers(
             client,
             market=args.market,
@@ -596,16 +594,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         data = batch.raw_data
 
         print_top_level_summary(data)
-
-        # filter_result = filter_candidates(
-        #     batch.candidates,
-        #     filter_settings,
-        # )
-
-        # accepted_symbols = {
-        #     candidate.symbol
-        #     for candidate in filter_result.accepted
-        # }
 
         pipeline_result = run_candidate_pipeline(
             batch.candidates,
@@ -625,11 +613,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             in accepted_symbols
         ]
 
-        # print(f"API records      : {len(batch.records)}")
-        # print(f"Accepted records : {len(filter_result.accepted)}")
-        # print(f"Rejected records : {len(filter_result.rejected)}")
-        # print(f"Local ordering   : {args.sort}")
-
         print(f"API records      : {pipeline_result.input_count}")
         print(f"Accepted records : {pipeline_result.accepted_count}")
         print(f"Rejected records : {pipeline_result.rejected_count}")
@@ -637,21 +620,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
         print_mover_summary(records)
-        # print_rejection_summary(filter_result)
         print_rejection_summary(pipeline_result)
 
         output_dir = args.output_dir.expanduser().resolve()
-
-        # raw_path, symbols_path, run_path = save_outputs(
-        #     output_dir=output_dir,
-        #     data=data,
-        #     market=args.market,
-        #     sort=args.sort,
-        #     frequency=args.frequency,
-        #     records=records,
-        #     filter_settings=filter_settings,
-        #     filter_result=filter_result,
-        # )
 
         raw_path, symbols_path, run_path = save_outputs(
             output_dir=output_dir,
