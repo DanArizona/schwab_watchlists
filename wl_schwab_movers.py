@@ -44,14 +44,14 @@ from mb_tools.schwab_secure.client import (
     make_secure_schwab_client,
 )
 from mb_tools.schwab_secure.config import SecureSchwabConfigError
-
 from candidate_filters import (
-    FilterResult,
     FilterSettings,
     MissingFieldPolicy,
-    filter_candidates,
 )
-# from candidate_model import SymbolCandidate
+from candidate_pipeline import (
+    CandidatePipelineResult,
+    run_candidate_pipeline,
+)
 from schwab_movers_source import (
     FREQUENCY_CHOICES,
     MARKET_CHOICES,
@@ -240,7 +240,9 @@ def print_mover_summary(
     print("=" * 104)
 
 
-def print_rejection_summary(result: FilterResult) -> None:
+def print_rejection_summary(
+    result: CandidatePipelineResult,
+) -> None:
     """Print rejected candidates and their filtering reasons."""
 
     print()
@@ -271,8 +273,7 @@ def save_outputs(
     sort: str,
     frequency: int,
     records: Sequence[Mapping[str, Any]],
-    filter_settings: FilterSettings,
-    filter_result: FilterResult,
+    pipeline_result: CandidatePipelineResult,
 ) -> tuple[Path, Path, Path]:
     """Save raw JSON, extracted symbols, and run metadata."""
 
@@ -321,30 +322,40 @@ def save_outputs(
         "watchlist_action": None,
         "raw_response_file": str(raw_path),
         "symbols_file": str(symbols_path),
-        "api_record_count": len(filter_result.decisions),
-        "accepted_count": len(filter_result.accepted),
-        "rejected_count": len(filter_result.rejected),
+        "pipeline_source": pipeline_result.source_name,
+        "pipeline_evaluated_at": (
+            pipeline_result.evaluated_at.isoformat(
+                timespec="seconds"
+            )
+        ),
+
+        "api_record_count": pipeline_result.input_count,
+        "accepted_count": pipeline_result.accepted_count,
+        "rejected_count": pipeline_result.rejected_count,
         "filters": {
-            "min_price": filter_settings.min_price,
-            "max_price": filter_settings.max_price,
-            "min_volume": filter_settings.min_volume,
+            "min_price": pipeline_result.settings.min_price,
+            "max_price": pipeline_result.settings.max_price,
+            "min_volume": pipeline_result.settings.min_volume,
             "min_percent_change": (
-                filter_settings.min_percent_change
+                pipeline_result.settings.min_percent_change
             ),
             "max_percent_change": (
-                filter_settings.max_percent_change
+                pipeline_result.settings.max_percent_change
             ),
-            "max_results": filter_settings.max_results,
+            "max_results": pipeline_result.settings.max_results,
             "missing_field_policy": (
-                filter_settings.missing_field_policy.value
+                pipeline_result.settings
+                .missing_field_policy
+                .value
             ),
+
         },
         "rejections": [
             {
                 "symbol": decision.candidate.symbol,
                 "reasons": list(decision.reasons),
             }
-            for decision in filter_result.rejected
+            for decision in pipeline_result.rejected
         ],
     }
 
@@ -586,15 +597,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         print_top_level_summary(data)
 
-        filter_result = filter_candidates(
+        # filter_result = filter_candidates(
+        #     batch.candidates,
+        #     filter_settings,
+        # )
+
+        # accepted_symbols = {
+        #     candidate.symbol
+        #     for candidate in filter_result.accepted
+        # }
+
+        pipeline_result = run_candidate_pipeline(
             batch.candidates,
             filter_settings,
+            source_name="schwab_movers",
+            evaluated_at=batch.requested_at,
         )
 
-        accepted_symbols = {
-            candidate.symbol
-            for candidate in filter_result.accepted
-        }
+        accepted_symbols = set(
+            pipeline_result.accepted_symbols
+        )
 
         records = [
             record
@@ -603,15 +625,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             in accepted_symbols
         ]
 
-        print(f"API records      : {len(batch.records)}")
-        print(f"Accepted records : {len(filter_result.accepted)}")
-        print(f"Rejected records : {len(filter_result.rejected)}")
+        # print(f"API records      : {len(batch.records)}")
+        # print(f"Accepted records : {len(filter_result.accepted)}")
+        # print(f"Rejected records : {len(filter_result.rejected)}")
+        # print(f"Local ordering   : {args.sort}")
+
+        print(f"API records      : {pipeline_result.input_count}")
+        print(f"Accepted records : {pipeline_result.accepted_count}")
+        print(f"Rejected records : {pipeline_result.rejected_count}")
         print(f"Local ordering   : {args.sort}")
 
+
         print_mover_summary(records)
-        print_rejection_summary(filter_result)
+        # print_rejection_summary(filter_result)
+        print_rejection_summary(pipeline_result)
 
         output_dir = args.output_dir.expanduser().resolve()
+
+        # raw_path, symbols_path, run_path = save_outputs(
+        #     output_dir=output_dir,
+        #     data=data,
+        #     market=args.market,
+        #     sort=args.sort,
+        #     frequency=args.frequency,
+        #     records=records,
+        #     filter_settings=filter_settings,
+        #     filter_result=filter_result,
+        # )
 
         raw_path, symbols_path, run_path = save_outputs(
             output_dir=output_dir,
@@ -620,8 +660,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sort=args.sort,
             frequency=args.frequency,
             records=records,
-            filter_settings=filter_settings,
-            filter_result=filter_result,
+            pipeline_result=pipeline_result,
         )
 
         print()
