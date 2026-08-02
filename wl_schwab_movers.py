@@ -51,40 +51,15 @@ from candidate_filters import (
     MissingFieldPolicy,
     filter_candidates,
 )
-from candidate_model import SymbolCandidate
-
+# from candidate_model import SymbolCandidate
+from schwab_movers_source import (
+    FREQUENCY_CHOICES,
+    MARKET_CHOICES,
+    SORT_CHOICES,
+    fetch_schwab_movers,
+)
 
 DEFAULT_ECFG_NAME = "secure_schwabdev.ecfg"
-
-MARKET_CHOICES = (
-    "$DJI",
-    "$COMPX",
-    "$SPX",
-    "NYSE",
-    "NASDAQ",
-    "OTCBB",
-    "INDEX_ALL",
-    "EQUITY_ALL",
-    "OPTION_ALL",
-    "OPTION_PUT",
-    "OPTION_CALL",
-)
-
-SORT_CHOICES = (
-    "VOLUME",
-    "TRADES",
-    "PERCENT_CHANGE_UP",
-    "PERCENT_CHANGE_DOWN",
-)
-
-FREQUENCY_CHOICES = (
-    0,
-    1,
-    5,
-    10,
-    30,
-    60,
-)
 
 
 def resolve_ecfg_path(explicit_path: Path | None) -> Path:
@@ -110,171 +85,6 @@ def resolve_ecfg_path(explicit_path: Path | None) -> Path:
         return Path(vault).expanduser() / DEFAULT_ECFG_NAME
 
     return Path(DEFAULT_ECFG_NAME)
-
-
-def find_symbol_records(value: Any) -> list[Mapping[str, Any]]:
-    """
-    Recursively find dictionaries containing a nonempty 'symbol' field.
-
-    The first API run is intentionally schema-tolerant so that the complete
-    response can be examined before selection logic depends on exact fields.
-    """
-
-    records: list[Mapping[str, Any]] = []
-
-    if isinstance(value, Mapping):
-        symbol = value.get("symbol")
-
-        if isinstance(symbol, str) and symbol.strip():
-            records.append(value)
-
-        for child in value.values():
-            records.extend(find_symbol_records(child))
-
-    elif isinstance(value, list):
-        for child in value:
-            records.extend(find_symbol_records(child))
-
-    return records
-
-
-def deduplicate_records(
-    records: Sequence[Mapping[str, Any]],
-) -> list[Mapping[str, Any]]:
-    """Deduplicate records by uppercase symbol while preserving order."""
-
-    result: list[Mapping[str, Any]] = []
-    seen: set[str] = set()
-
-    for record in records:
-        raw_symbol = record.get("symbol")
-
-        if not isinstance(raw_symbol, str):
-            continue
-
-        symbol = raw_symbol.strip().upper()
-
-        if not symbol or symbol in seen:
-            continue
-
-        seen.add(symbol)
-        result.append(record)
-
-    return result
-
-
-def optional_float(value: Any) -> float | None:
-    """Convert a numeric value to float, excluding booleans."""
-
-    if isinstance(value, bool):
-        return None
-
-    if isinstance(value, (int, float)):
-        return float(value)
-
-    return None
-
-
-def optional_int(value: Any) -> int | None:
-    """Convert a numeric value to int, excluding booleans."""
-
-    if isinstance(value, bool):
-        return None
-
-    if isinstance(value, (int, float)):
-        return int(value)
-
-    return None
-
-
-def mover_record_to_candidate(
-    record: Mapping[str, Any],
-    *,
-    source_rank: int,
-    as_of: datetime,
-) -> SymbolCandidate:
-    """
-    Convert one Schwab mover record into the common candidate model.
-
-    Schwab returns netPercentChange as a decimal ratio, so it is multiplied
-    by 100 before being stored as percentage points.
-    """
-
-    raw_symbol = record.get("symbol")
-
-    if not isinstance(raw_symbol, str) or not raw_symbol.strip():
-        raise ValueError("Schwab mover record does not contain a symbol.")
-
-    raw_description = record.get("description")
-    description = (
-        raw_description.strip()
-        if isinstance(raw_description, str) and raw_description.strip()
-        else None
-    )
-
-    percent_ratio = optional_float(record.get("netPercentChange"))
-    percent_change = (
-        percent_ratio * 100.0
-        if percent_ratio is not None
-        else None
-    )
-
-    return SymbolCandidate(
-        symbol=raw_symbol,
-        source="schwab_movers",
-        as_of=as_of,
-
-        # The movers response does not identify the market session.
-        session=None,
-
-        last_price=optional_float(record.get("lastPrice")),
-        regular_close=None,
-        percent_change=percent_change,
-
-        volume=optional_int(record.get("volume")),
-        trades=optional_int(record.get("trades")),
-        market_share_percent=optional_float(record.get("marketShare")),
-
-        description=description,
-        source_rank=source_rank,
-        raw=dict(record),
-    )
-
-
-def sort_mover_records(
-    records: Sequence[Mapping[str, Any]],
-    sort_name: str,
-) -> list[Mapping[str, Any]]:
-    """Sort mover records deterministically using returned Schwab fields."""
-
-    if sort_name == "VOLUME":
-        return sorted(
-            records,
-            key=lambda record: record.get("volume") or 0,
-            reverse=True,
-        )
-
-    if sort_name == "TRADES":
-        return sorted(
-            records,
-            key=lambda record: record.get("trades") or 0,
-            reverse=True,
-        )
-
-    if sort_name == "PERCENT_CHANGE_UP":
-        return sorted(
-            records,
-            key=lambda record: record.get("netPercentChange") or 0,
-            reverse=True,
-        )
-
-    if sort_name == "PERCENT_CHANGE_DOWN":
-        return sorted(
-            records,
-            key=lambda record: record.get("netPercentChange") or 0,
-        )
-
-    raise ValueError(f"Unsupported mover sort: {sort_name}")
 
 
 def first_value(
@@ -673,10 +483,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
-    # if args.limit is not None and args.limit < 1:
-    #     print("ERROR: --limit must be at least 1.", file=sys.stderr)
-    #     return 2
-
     try:
         filter_settings = FilterSettings(
             min_price=args.min_price,
@@ -764,51 +570,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Client created   : {type(client).__name__}")
         print("Requesting movers...")
 
-        response = client.movers(
-            symbol=args.market,
-            sort=args.sort,
+# --------------------------------------------------------
+
+        batch = fetch_schwab_movers(
+            client,
+            market=args.market,
+            sort_name=args.sort,
             frequency=args.frequency,
         )
 
-        print(f"Request URL      : {response.url}")
-        print(f"HTTP status      : {response.status_code}")
-        response.raise_for_status()
+        print(f"Request URL      : {batch.request_url}")
+        print(f"HTTP status      : {batch.status_code}")
 
-        try:
-            data = response.json()
-        except ValueError as exc:
-            print(
-                f"ERROR: Schwab response was not valid JSON: {exc}",
-                file=sys.stderr,
-            )
-            return 1
+        data = batch.raw_data
 
         print_top_level_summary(data)
 
-        discovered_records = find_symbol_records(data)
-        api_records = deduplicate_records(discovered_records)
-
-        ordered_records = sort_mover_records(
-            api_records,
-            args.sort,
-        )
-
-        candidate_time = datetime.now().astimezone()
-
-        candidates = [
-            mover_record_to_candidate(
-                record,
-                source_rank=index,
-                as_of=candidate_time,
-            )
-            for index, record in enumerate(
-                ordered_records,
-                start=1,
-            )
-        ]
-
         filter_result = filter_candidates(
-            candidates,
+            batch.candidates,
             filter_settings,
         )
 
@@ -819,12 +598,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         records = [
             record
-            for record in ordered_records
+            for record in batch.records
             if str(record.get("symbol", "")).strip().upper()
             in accepted_symbols
         ]
 
-        print(f"API records      : {len(api_records)}")
+        print(f"API records      : {len(batch.records)}")
         print(f"Accepted records : {len(filter_result.accepted)}")
         print(f"Rejected records : {len(filter_result.rejected)}")
         print(f"Local ordering   : {args.sort}")
@@ -861,6 +640,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SecureSchwabConfigError as exc:
         print(f"ERROR: Invalid Schwab configuration: {exc}", file=sys.stderr)
         return 4
+
+    except ValueError as exc:
+        print(
+            f"ERROR: Invalid Schwab Movers data or settings: {exc}",
+            file=sys.stderr,
+        )
+        return 1
 
     except Exception as exc:
         print(
