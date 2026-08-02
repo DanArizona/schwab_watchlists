@@ -31,9 +31,9 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import json
 import os
 import sys
+import subprocess
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
@@ -59,6 +59,11 @@ from schwab_movers_source import (
     fetch_schwab_movers,
 )
 from candidate_outputs import write_candidate_outputs
+from watchlist_submission import (
+    COMMAND_FOR_MODE,
+    build_watchlist_command,
+    submit_watchlist_symbols,
+)
 
 DEFAULT_ECFG_NAME = "secure_schwabdev.ecfg"
 
@@ -266,111 +271,6 @@ def print_rejection_summary(
     print("=" * 104)
 
 
-def save_outputs(
-    *,
-    output_dir: Path,
-    data: Any,
-    market: str,
-    sort: str,
-    frequency: int,
-    records: Sequence[Mapping[str, Any]],
-    pipeline_result: CandidatePipelineResult,
-) -> tuple[Path, Path, Path]:
-    """Save raw JSON, extracted symbols, and run metadata."""
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    now = datetime.now().astimezone()
-    timestamp = now.strftime("%Y-%m-%d-%H-%M-%S")
-
-    safe_market = market.replace("$", "").lower()
-    safe_sort = sort.lower()
-
-    stem = f"{timestamp}-movers-{safe_market}-{safe_sort}"
-
-    raw_path = output_dir / f"{stem}-raw.json"
-    symbols_path = output_dir / f"{stem}-symbols.txt"
-    run_path = output_dir / f"{stem}-run.json"
-
-    with raw_path.open("w", encoding="utf-8") as output_file:
-        json.dump(
-            data,
-            output_file,
-            indent=2,
-            sort_keys=True,
-        )
-        output_file.write("\n")
-
-    symbols = [
-        str(record["symbol"]).strip().upper()
-        for record in records
-        if isinstance(record.get("symbol"), str)
-    ]
-
-    with symbols_path.open("w", encoding="utf-8") as output_file:
-        for symbol in symbols:
-            output_file.write(f"{symbol}\n")
-
-    run_record = {
-        "created_at": now.isoformat(timespec="seconds"),
-        "source": "schwab_movers",
-        "market": market,
-        "sort": sort,
-        "frequency": frequency,
-        "symbol_count": len(symbols),
-        "symbols": symbols,
-        "submitted": False,
-        "watchlist_action": None,
-        "raw_response_file": str(raw_path),
-        "symbols_file": str(symbols_path),
-        "pipeline_source": pipeline_result.source_name,
-        "pipeline_evaluated_at": (
-            pipeline_result.evaluated_at.isoformat(
-                timespec="seconds"
-            )
-        ),
-
-        "api_record_count": pipeline_result.input_count,
-        "accepted_count": pipeline_result.accepted_count,
-        "rejected_count": pipeline_result.rejected_count,
-        "filters": {
-            "min_price": pipeline_result.settings.min_price,
-            "max_price": pipeline_result.settings.max_price,
-            "min_volume": pipeline_result.settings.min_volume,
-            "min_percent_change": (
-                pipeline_result.settings.min_percent_change
-            ),
-            "max_percent_change": (
-                pipeline_result.settings.max_percent_change
-            ),
-            "max_results": pipeline_result.settings.max_results,
-            "missing_field_policy": (
-                pipeline_result.settings
-                .missing_field_policy
-                .value
-            ),
-
-        },
-        "rejections": [
-            {
-                "symbol": decision.candidate.symbol,
-                "reasons": list(decision.reasons),
-            }
-            for decision in pipeline_result.rejected
-        ],
-    }
-
-    with run_path.open("w", encoding="utf-8") as output_file:
-        json.dump(
-            run_record,
-            output_file,
-            indent=2,
-        )
-        output_file.write("\n")
-
-    return raw_path, symbols_path, run_path
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -489,11 +389,70 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for generated output. Default: project output folder.",
     )
 
+    parser.add_argument(
+        "--mode",
+        choices=sorted(COMMAND_FOR_MODE),
+        default=None,
+        help=(
+            "Optional Watchlist operation. "
+            "'add' appends accepted symbols; "
+            "'replace' replaces the Watchlist. "
+            "Without this option, no Watchlist "
+            "command is prepared."
+        ),
+    )
+
+    parser.add_argument(
+        "--submit",
+        action="store_true",
+        help=(
+            "Publish the Watchlist command. "
+            "Requires --mode. Without --submit, "
+            "the Watchlist operation is only previewed."
+        ),
+    )
+
+    parser.add_argument(
+        "--wait",
+        type=float,
+        default=30.0,
+        metavar="SECONDS",
+        help=(
+            "Maximum wait for Watchlist command "
+            "processing. Default: 30."
+        ),
+    )
+
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help=(
+            "Scanner command root. By default, "
+            "mb-scan-command uses MB_SCAN_CONTROL."
+        ),
+    )
+
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.submit and args.mode is None:
+        print(
+            "ERROR: --submit requires --mode "
+            "add or replace.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.wait < 0:
+        print(
+            "ERROR: --wait cannot be negative.",
+            file=sys.stderr,
+        )
+        return 2
 
     try:
         filter_settings = FilterSettings(
@@ -528,7 +487,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"{args.limit if args.limit is not None else 'all returned symbols'}"
     )
     print(f"Timeout          : {args.timeout} seconds")
-    print("Watchlist action : NONE")
+    # print("Watchlist action : NONE")
+    if args.mode is None:
+        watchlist_action_text = "NONE"
+    else:
+        submission_kind = (
+            "LIVE"
+            if args.submit
+            else "DRY RUN"
+        )
+
+        watchlist_action_text = (
+            f"{args.mode.upper()} "
+            f"({submission_kind})"
+        )
+
+    print(
+        f"Watchlist action : "
+        f"{watchlist_action_text}"
+    )
+
     print()
     print("Filters")
     print("-" * 72)
@@ -625,16 +603,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         output_dir = args.output_dir.expanduser().resolve()
 
-        # raw_path, symbols_path, run_path = save_outputs(
-        #     output_dir=output_dir,
-        #     data=data,
-        #     market=args.market,
-        #     sort=args.sort,
-        #     frequency=args.frequency,
-        #     records=records,
-        #     pipeline_result=pipeline_result,
-        # )
-
         output_timestamp = (
             datetime.now()
             .astimezone()
@@ -660,23 +628,159 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "frequency": args.frequency,
                 "request_url": batch.request_url,
                 "http_status": batch.status_code,
-                "watchlist_action": None,
+                "watchlist_action": (
+                    COMMAND_FOR_MODE[args.mode]
+                    if args.mode is not None
+                    else None
+                ),
+                "watchlist_mode": args.mode,
+                "watchlist_submit_requested": (
+                    bool(args.mode and args.submit)
+                ),
             },
         )
-        # ---------------------------------
 
         print()
-        # print(f"Raw response     : {raw_path}")
-        # print(f"Extracted symbols: {symbols_path}")
-        # print(f"Run record       : {run_path}")
         print(f"Raw response     : {output_paths.raw_json}")
         print(f"Extracted symbols: {output_paths.symbols_text}")
         print(f"Run record       : {output_paths.run_json}")
-        # ---------------------------------
         print()
-        print("No Watchlist command was published.")
-        print("Schwab movers probe completed successfully.")
+
+        if args.mode is None:
+            print(
+                "No Watchlist command was published."
+            )
+            print(
+                "Schwab movers probe completed "
+                "successfully."
+            )
+            return 0
+
+        if not pipeline_result.accepted_symbols:
+            print(
+                "ERROR: No accepted symbols are "
+                "available for the requested "
+                "Watchlist operation.",
+                file=sys.stderr,
+            )
+            print(
+                "No Watchlist command was prepared."
+            )
+            return 2
+
+        preview_command = build_watchlist_command(
+            mode=args.mode,
+            symbols=(
+                pipeline_result.accepted_symbols
+            ),
+            wait=args.wait,
+            root=args.root,
+        )
+
+        print("Watchlist submission")
+        print("=" * 72)
+        print(f"Mode             : {args.mode}")
+        print(
+            f"Scanner command  : "
+            f"{COMMAND_FOR_MODE[args.mode]}"
+        )
+        print(
+            f"Symbol count     : "
+            f"{pipeline_result.accepted_count}"
+        )
+        print(
+            f"Submission       : "
+            f"{'LIVE' if args.submit else 'DRY RUN'}"
+        )
+
+        print()
+        print("Symbols:")
+        print(
+            " ".join(
+                pipeline_result.accepted_symbols
+            )
+        )
+
+        print()
+        print("Command:")
+        print(
+            subprocess.list2cmdline(
+                list(preview_command)
+            )
+        )
+
+        if args.submit:
+            print()
+            print("Publishing command...")
+
+        try:
+            submission_result = (
+                submit_watchlist_symbols(
+                    mode=args.mode,
+                    symbols=(
+                        pipeline_result
+                        .accepted_symbols
+                    ),
+                    submit=args.submit,
+                    wait=args.wait,
+                    root=args.root,
+                    output_dir=output_dir,
+                )
+            )
+        except RuntimeError as exc:
+            print(
+                f"ERROR: Watchlist submission "
+                f"failed: {exc}",
+                file=sys.stderr,
+            )
+            return 3
+
+        print()
+
+        if not submission_result.submitted:
+            print(
+                "No Watchlist command was published."
+            )
+            print(
+                f"Watchlist run record: "
+                f"{submission_result.run_record_path}"
+            )
+            print(
+                "Schwab movers probe completed "
+                "successfully."
+            )
+            return 0
+
+        print(
+            f"mb-scan-command exit code: "
+            f"{submission_result.return_code}"
+        )
+        print(
+            f"Watchlist run record     : "
+            f"{submission_result.run_record_path}"
+        )
+
+        if not submission_result.successful:
+            print(
+                "Watchlist command was not "
+                "reported as successfully processed.",
+                file=sys.stderr,
+            )
+            return (
+                submission_result.return_code
+                or 1
+            )
+
+        print(
+            "Watchlist command was reported "
+            "as processed."
+        )
+        print(
+            "Schwab movers probe completed "
+            "successfully."
+        )
         return 0
+
 
     except SchwabdevNotInstalledError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
