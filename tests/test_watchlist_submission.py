@@ -9,6 +9,7 @@ from watchlist_submission import (
     normalize_symbols,
     submit_watchlist_symbols,
 )
+from scanner_preflight import ScannerPreflightResult
 
 
 CREATED_AT = datetime(
@@ -113,6 +114,28 @@ def test_live_submission_uses_resolved_executable(
     class Completed:
         returncode = 0
 
+    preflight_calls = []
+
+    def fake_preflight(
+        *,
+        root: Path | None,
+    ) -> ScannerPreflightResult:
+        preflight_calls.append(root)
+
+        return ScannerPreflightResult(
+            root=tmp_path,
+            ready=True,
+            status="HEALTHY",
+            detail=(
+                "Scanner is healthy, idle, running, "
+                "and not paused."
+            ),
+            loop_state="idle",
+            running=True,
+            paused=False,
+            age_seconds=1.0,
+        )
+
     def fake_finder(name: str) -> str:
         assert name == "mb-scan-command"
         return r"C:\tools\mb-scan-command.exe"
@@ -141,11 +164,17 @@ def test_live_submission_uses_resolved_executable(
         executable_finder=fake_finder,
         runner=fake_runner,
         created_at=CREATED_AT,
+        preflight_checker=fake_preflight,
     )
 
     assert result.submitted
     assert result.return_code == 0
     assert result.successful
+
+    assert preflight_calls == [None]
+    assert result.preflight is not None
+    assert result.preflight.ready
+    assert result.preflight.status == "HEALTHY"
 
     assert calls == [
         {
@@ -204,4 +233,52 @@ def test_negative_wait_is_rejected(
             symbols=["TEST"],
             wait=-1,
             output_dir=tmp_path,
+        )
+
+
+def test_failed_preflight_blocks_live_command(
+    tmp_path: Path,
+) -> None:
+    def failed_preflight(
+        *,
+        root: Path | None,
+    ) -> ScannerPreflightResult:
+        return ScannerPreflightResult(
+            root=tmp_path,
+            ready=False,
+            status="STOPPED",
+            detail=(
+                "Scanner is not ready for Watchlist "
+                "submission."
+            ),
+            loop_state="stopped",
+            running=False,
+            paused=False,
+            age_seconds=120.0,
+        )
+
+    def unexpected_finder(name: str) -> str:
+        raise AssertionError(
+            "Executable lookup must not occur "
+            "after failed preflight."
+        )
+
+    def unexpected_runner(*args, **kwargs):
+        raise AssertionError(
+            "Command execution must not occur "
+            "after failed preflight."
+        )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Scanner preflight failed",
+    ):
+        submit_watchlist_symbols(
+            mode="add",
+            symbols=["TEST"],
+            submit=True,
+            output_dir=tmp_path,
+            preflight_checker=failed_preflight,
+            executable_finder=unexpected_finder,
+            runner=unexpected_runner,
         )

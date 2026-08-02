@@ -191,13 +191,28 @@ Before a live Watchlist submission:
 1. ThinkOrSwim must be running on the scanner computer.
 2. The expected ThinkOrSwim Watchlist window must be open.
 3. `ToS_scanner` must be running.
-4. `mb-scan-status` should report a healthy scanner.
-5. The network command root must be accessible.
+4. The network command root must be accessible.
+5. The scanner must be healthy, idle, running, and not paused.
 
-Check scanner status with:
+The application performs this readiness check automatically before publishing a live command. You can also verify the scanner manually:
+
+```cmd
+mb-scan-status --root "\\El-Cheapo\SCANCTRL"
+```
+
+When `MB_SCAN_CONTROL` is already configured, the shorter form may be used:
 
 ```cmd
 mb-scan-status
+```
+
+The required state is:
+
+```text
+Scanner status : HEALTHY
+Loop state     : idle
+Running        : yes
+Paused         : no
 ```
 
 ## Quick start
@@ -588,6 +603,9 @@ The current implementation uses several layers of protection:
 6. Preview and live operations create JSON run records.
 7. The underlying `mb-scan-command` exit code is checked.
 8. Live submission waits for scanner processing when `--wait` is greater than zero.
+9. Live submission performs a scanner-readiness preflight before `mb-scan-command` is executed.
+10. The preflight requires a current `HEALTHY` heartbeat, an idle loop, `running=true`, and `paused=false`.
+11. A failed preflight prevents executable lookup and command publication.
 
 The `replace` operation is potentially destructive because it replaces the current Default Watchlist symbol list. Export or otherwise preserve the existing Watchlist before the first live replace test.
 

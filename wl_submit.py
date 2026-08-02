@@ -208,8 +208,10 @@ def main(
 
     if args.submit:
         print()
-        print("Publishing command...")
-
+        print(
+            "Checking scanner readiness "
+            "and publishing command..."
+        )
     try:
         result = submit_watchlist_symbols(
             mode=args.mode,
@@ -235,6 +237,20 @@ def main(
             f"{result.run_record_path}"
         )
         return 0
+
+    if result.preflight is not None:
+        print(
+            f"Scanner preflight       : "
+            f"{'READY' if result.preflight.ready else 'NOT READY'}"
+        )
+        print(
+            f"Scanner status          : "
+            f"{result.preflight.status}"
+        )
+        print(
+            f"Scanner root            : "
+            f"{result.preflight.root}"
+        )
 
     print(
         f"mb-scan-command exit code: "

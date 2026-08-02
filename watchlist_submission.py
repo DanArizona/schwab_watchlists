@@ -16,7 +16,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-
+from scanner_preflight import (
+    ScannerPreflightResult,
+    check_scanner_ready,
+)
 
 COMMAND_FOR_MODE = {
     "add": "add_wl_symbols",
@@ -35,6 +38,7 @@ class WatchlistSubmissionResult:
     submitted: bool
     return_code: int | None
     run_record_path: Path
+    preflight: ScannerPreflightResult | None
 
     @property
     def successful(self) -> bool:
@@ -127,6 +131,7 @@ def save_watchlist_run_record(
     command: Sequence[str],
     return_code: int | None,
     created_at: datetime | None = None,
+    preflight: ScannerPreflightResult | None = None,
 ) -> Path:
     """Save a JSON record for one Watchlist operation."""
 
@@ -154,6 +159,11 @@ def save_watchlist_run_record(
         "symbols": list(symbols),
         "command": list(command),
         "return_code": return_code,
+        "scanner_preflight": (
+            preflight.as_record()
+            if preflight is not None
+            else None
+        ),
     }
 
     with output_path.open(
@@ -188,6 +198,10 @@ def submit_watchlist_symbols(
         ...,
         subprocess.CompletedProcess[str],
     ] = subprocess.run,
+    preflight_checker: Callable[
+        ...,
+        ScannerPreflightResult,
+    ] = check_scanner_ready,
     created_at: datetime | None = None,
 ) -> WatchlistSubmissionResult:
     """
@@ -216,6 +230,7 @@ def submit_watchlist_symbols(
             command=preview_command,
             return_code=None,
             created_at=created_at,
+            preflight=None,
         )
 
         return WatchlistSubmissionResult(
@@ -226,6 +241,17 @@ def submit_watchlist_symbols(
             submitted=False,
             return_code=None,
             run_record_path=run_record_path,
+            preflight=None,
+        )
+
+    preflight = preflight_checker(
+        root=root,
+    )
+
+    if not preflight.ready:
+        raise RuntimeError(
+            f"Scanner preflight failed: "
+            f"{preflight.detail}"
         )
 
     executable = executable_finder(
@@ -264,6 +290,7 @@ def submit_watchlist_symbols(
         command=live_command,
         return_code=completed.returncode,
         created_at=created_at,
+        preflight=preflight,
     )
 
     return WatchlistSubmissionResult(
@@ -274,4 +301,5 @@ def submit_watchlist_symbols(
         submitted=True,
         return_code=completed.returncode,
         run_record_path=run_record_path,
-    )
+        preflight=preflight,
+)

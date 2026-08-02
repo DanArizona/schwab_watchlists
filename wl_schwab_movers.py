@@ -858,7 +858,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.submit:
             print()
-            print("Publishing command...")
+            print(
+                "Checking scanner readiness "
+                "and publishing command..."
+            )
 
         try:
             submission_result = (
@@ -897,6 +900,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "successfully."
             )
             return 0
+
+        if submission_result.preflight is not None:
+            print(
+                f"Scanner preflight       : "
+                f"{'READY' if submission_result.preflight.ready else 'NOT READY'}"
+            )
+            print(
+                f"Scanner status          : "
+                f"{submission_result.preflight.status}"
+            )
+            print(
+                f"Scanner root            : "
+                f"{submission_result.preflight.root}"
+            )
+
+        print(
+            f"mb-scan-command exit code: "
+            f"{submission_result.return_code}"
+        )
 
         print(
             f"mb-scan-command exit code: "
