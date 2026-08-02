@@ -1,0 +1,81 @@
+{
+  "screeners": [
+    {
+      "description": "SYNTHETIC PRICE REJECT",
+      "lastPrice": 0.25,
+      "marketShare": 12.5,
+      "netChange": 0.08,
+      "netPercentChange": 0.5,
+      "symbol": "TSTC",
+      "totalVolume": 10000000,
+      "trades": 10000,
+      "volume": 10000000
+    },
+    {
+      "description": "SYNTHETIC ALPHA",
+      "lastPrice": 12.5,
+      "marketShare": 10.0,
+      "netChange": 2.5,
+      "netPercentChange": 0.25,
+      "symbol": "TSTA",
+      "totalVolume": 5000000,
+      "trades": 5000,
+      "volume": 5000000
+    },
+    {
+      "description": "SYNTHETIC VOLUME REJECT",
+      "lastPrice": 8.0,
+      "marketShare": 8.0,
+      "netChange": 0.85,
+      "netPercentChange": 0.12,
+      "symbol": "TSTD",
+      "totalVolume": 100000,
+      "trades": 1000,
+      "volume": 100000
+    },
+    {
+      "description": "SYNTHETIC BRAVO",
+      "lastPrice": 3.2,
+      "marketShare": 6.0,
+      "netChange": 0.24,
+      "netPercentChange": 0.08,
+      "symbol": "TSTB",
+      "totalVolume": 2000000,
+      "trades": 3000,
+      "volume": 2000000
+    },
+    {
+      "description": "SYNTHETIC RESULT LIMIT",
+      "lastPrice": 5.0,
+      "marketShare": 5.0,
+      "netChange": 0.28,
+      "netPercentChange": 0.06,
+      "symbol": "TSTE",
+      "totalVolume": 1500000,
+      "trades": 2500,
+      "volume": 1500000
+    },
+    {
+      "description": "SYNTHETIC CHANGE REJECT",
+      "lastPrice": 20.0,
+      "marketShare": 3.0,
+      "netChange": 0.2,
+      "netPercentChange": 0.01,
+      "symbol": "TSTF",
+      "totalVolume": 4000000,
+      "trades": 4000,
+      "volume": 4000000
+    },
+    {
+      "description": "SYNTHETIC DECLINER",
+      "lastPrice": 15.0,
+      "marketShare": 2.0,
+      "netChange": -1.67,
+      "netPercentChange": -0.1,
+      "symbol": "TSTG",
+      "totalVolume": 6000000,
+      "trades": 6000,
+      "volume": 6000000
+    }
+  ]
+}

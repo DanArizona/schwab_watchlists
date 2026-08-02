@@ -640,6 +640,25 @@ git status --short --untracked-files=all
 git diff
 ```
 
+### Replay integration fixture
+
+`tests/fixtures/schwab_movers_sample.json` contains a small synthetic
+Schwab Movers response used by the automated replay workflow tests.
+
+The fixture contains no credentials, account information, tokens, or
+captured personal data.
+
+The replay integration test exercises:
+
+* saved-response loading;
+* local record ordering;
+* candidate conversion;
+* filtering and result limiting;
+* candidate output generation;
+* Watchlist dry-run preparation;
+* Watchlist run-record generation;
+* rejection of live submission from replayed data.
+
 ## Design principles
 
 ### Safe by default
