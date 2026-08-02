@@ -2,7 +2,6 @@ from datetime import datetime, timezone
 
 import pytest
 
-# from wl_schwab_movers import mover_record_to_candidate
 from schwab_movers_source import (
     fetch_schwab_movers,
     mover_record_to_candidate,
