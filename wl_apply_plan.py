@@ -152,6 +152,8 @@ def main(
             wait=args.wait,
             root=args.root,
             output_dir=args.output_dir,
+            source_plan_path=plan.source_path,
+            source_plan_created_at=plan.created_at,
         )
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

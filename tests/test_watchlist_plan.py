@@ -165,3 +165,10 @@ def test_apply_plan_dry_run(
         "EZRA",
         "NVDA",
     ]
+
+    assert record["source_plan_file"] == str(
+        plan_path.resolve()
+    )
+    assert record["source_plan_created_at"] == (
+        "2026-08-03T12:00:37-05:00"
+    )

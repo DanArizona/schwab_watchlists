@@ -132,6 +132,8 @@ def save_watchlist_run_record(
     return_code: int | None,
     created_at: datetime | None = None,
     preflight: ScannerPreflightResult | None = None,
+    source_plan_path: Path | None = None,
+    source_plan_created_at: str | None = None,
 ) -> Path:
     """Save a JSON record for one Watchlist operation."""
 
@@ -150,6 +152,12 @@ def save_watchlist_run_record(
         / f"{timestamp}-wl-{mode}-run.json"
     )
 
+    resolved_source_plan = (
+        source_plan_path.expanduser().resolve()
+        if source_plan_path is not None
+        else None
+    )
+
     record = {
         "created_at": now.isoformat(timespec="seconds"),
         "mode": mode,
@@ -164,6 +172,12 @@ def save_watchlist_run_record(
             if preflight is not None
             else None
         ),
+        "source_plan_file": (
+            str(resolved_source_plan)
+            if resolved_source_plan is not None
+            else None
+        ),
+        "source_plan_created_at": source_plan_created_at,
     }
 
     with output_path.open(
@@ -203,6 +217,8 @@ def submit_watchlist_symbols(
         ScannerPreflightResult,
     ] = check_scanner_ready,
     created_at: datetime | None = None,
+    source_plan_path: Path | None = None,
+    source_plan_created_at: str | None = None,
 ) -> WatchlistSubmissionResult:
     """
     Preview or publish one Watchlist command.
@@ -231,6 +247,8 @@ def submit_watchlist_symbols(
             return_code=None,
             created_at=created_at,
             preflight=None,
+            source_plan_path=source_plan_path,
+            source_plan_created_at=source_plan_created_at,
         )
 
         return WatchlistSubmissionResult(
@@ -291,6 +309,8 @@ def submit_watchlist_symbols(
         return_code=completed.returncode,
         created_at=created_at,
         preflight=preflight,
+        source_plan_path=source_plan_path,
+        source_plan_created_at=source_plan_created_at,
     )
 
     return WatchlistSubmissionResult(
