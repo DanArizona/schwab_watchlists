@@ -29,13 +29,45 @@ RECORD_ORIGIN_SCHWAB_MOVERS = "schwab_movers"
 RECORD_ORIGIN_DIRECT_SUBMISSION = "direct_submission"
 RECORD_ORIGIN_PLAN_PREVIEW = "plan_preview"
 RECORD_ORIGIN_PLAN_APPLICATION = "plan_application"
+RECORD_ORIGIN_WATCHLIST_CYCLE = "watchlist_cycle"
 
 VALID_RECORD_ORIGINS = frozenset({
     RECORD_ORIGIN_SCHWAB_MOVERS,
     RECORD_ORIGIN_DIRECT_SUBMISSION,
     RECORD_ORIGIN_PLAN_PREVIEW,
     RECORD_ORIGIN_PLAN_APPLICATION,
+    RECORD_ORIGIN_WATCHLIST_CYCLE,
 })
+
+
+def normalize_cycle_id(
+    cycle_id: str | None,
+) -> str | None:
+    """Validate an optional cycle identifier for records and filenames."""
+
+    if cycle_id is None:
+        return None
+
+    normalized = cycle_id.strip()
+
+    if not normalized:
+        raise ValueError(
+            "Watchlist cycle_id cannot be empty."
+        )
+
+    if Path(normalized).name != normalized:
+        raise ValueError(
+            "Watchlist cycle_id cannot contain "
+            "directory components."
+        )
+
+    if "/" in normalized or "\\" in normalized:
+        raise ValueError(
+            "Watchlist cycle_id cannot contain "
+            "path separators."
+        )
+
+    return normalized
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +178,7 @@ def save_watchlist_run_record(
     source_plan_path: Path | None = None,
     source_plan_created_at: str | None = None,
     record_origin: str = RECORD_ORIGIN_DIRECT_SUBMISSION,
+    cycle_id: str | None = None,
 ) -> Path:
     """Save a JSON record for one Watchlist operation."""
 
@@ -154,6 +187,9 @@ def save_watchlist_run_record(
             "Unsupported Watchlist record origin: "
             f"{record_origin}"
         )
+    normalized_cycle_id = normalize_cycle_id(
+        cycle_id
+    )
 
     now = created_at or datetime.now().astimezone()
 
@@ -165,10 +201,17 @@ def save_watchlist_run_record(
 
     timestamp = now.strftime("%Y-%m-%d-%H-%M-%S")
 
+    filename_prefix = (
+        normalized_cycle_id
+        if normalized_cycle_id is not None
+        else timestamp
+    )
+
     output_path = (
         resolved_output_dir
-        / f"{timestamp}-wl-{mode}-run.json"
+        / f"{filename_prefix}-wl-{mode}-run.json"
     )
+
 
     resolved_source_plan = (
         source_plan_path.expanduser().resolve()
@@ -179,6 +222,7 @@ def save_watchlist_run_record(
     record = {
         "created_at": now.isoformat(timespec="seconds"),
         "record_origin": record_origin,
+        "cycle_id": normalized_cycle_id,
         "mode": mode,
         "scanner_command": COMMAND_FOR_MODE[mode],
         "submitted": submitted,
@@ -239,6 +283,7 @@ def submit_watchlist_symbols(
     source_plan_path: Path | None = None,
     source_plan_created_at: str | None = None,
     record_origin: str = RECORD_ORIGIN_DIRECT_SUBMISSION,
+    cycle_id: str | None = None,
 ) -> WatchlistSubmissionResult:
     """
     Preview or publish one Watchlist command.
@@ -270,6 +315,7 @@ def submit_watchlist_symbols(
             source_plan_path=source_plan_path,
             source_plan_created_at=source_plan_created_at,
             record_origin=record_origin,
+            cycle_id=cycle_id,
         )
 
         return WatchlistSubmissionResult(
@@ -333,6 +379,7 @@ def submit_watchlist_symbols(
         source_plan_path=source_plan_path,
         source_plan_created_at=source_plan_created_at,
         record_origin=record_origin,
+        cycle_id=cycle_id,
     )
 
     return WatchlistSubmissionResult(

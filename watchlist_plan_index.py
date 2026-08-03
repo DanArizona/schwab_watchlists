@@ -14,8 +14,13 @@ from typing import Any
 from watchlist_submission import (
     COMMAND_FOR_MODE,
     RECORD_ORIGIN_SCHWAB_MOVERS,
+    RECORD_ORIGIN_WATCHLIST_CYCLE,
     normalize_symbols,
 )
+GENERATED_PLAN_ORIGINS = frozenset({
+    RECORD_ORIGIN_SCHWAB_MOVERS,
+    RECORD_ORIGIN_WATCHLIST_CYCLE,
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +117,7 @@ def discover_watchlist_plans(
 
     Current original plans have:
 
-    - record_origin=schwab_movers;
+    - record_origin=schwab_movers or watchlist_cycle    
     - submitted=false; and
     - no source_plan_file.
 
@@ -230,10 +235,7 @@ def discover_watchlist_plans(
             "record_origin"
         )
 
-        if (
-            record_origin
-            == RECORD_ORIGIN_SCHWAB_MOVERS
-        ):
+        if record_origin in GENERATED_PLAN_ORIGINS:
             pass
         elif (
             include_legacy

@@ -7,6 +7,9 @@ import wl_list_plans
 from watchlist_plan_index import (
     discover_watchlist_plans,
 )
+from watchlist_submission import (
+    RECORD_ORIGIN_WATCHLIST_CYCLE,
+)
 
 
 def write_run_record(
@@ -321,3 +324,32 @@ def test_legacy_plan_requires_include_legacy(
         legacy_index.plans[0].record_origin
         is None
     )
+
+
+def test_watchlist_cycle_record_is_a_generated_plan(
+    tmp_path: Path,
+) -> None:
+    plan_path = write_run_record(
+        tmp_path
+        / "cycle-test-wl-replace-run.json",
+        created_at=(
+            "2026-08-03T17:46:00-05:00"
+        ),
+        symbols=["CYCLE"],
+        record_origin=(
+            RECORD_ORIGIN_WATCHLIST_CYCLE
+        ),
+    )
+
+    index = discover_watchlist_plans(
+        tmp_path
+    )
+
+    assert len(index.plans) == 1
+    assert index.plans[0].plan_path == (
+        plan_path.resolve()
+    )
+    assert index.plans[0].record_origin == (
+        RECORD_ORIGIN_WATCHLIST_CYCLE
+    )
+

@@ -15,6 +15,7 @@ def write_plan(
     mode: str = "replace",
     symbols: list[str] | None = None,
     submitted: bool = False,
+    cycle_id: str | None = None,
 ) -> Path:
     if symbols is None:
         symbols = [
@@ -43,6 +44,7 @@ def write_plan(
         ],
         "return_code": None,
         "scanner_preflight": None,
+        "cycle_id": cycle_id,
     }
 
     path.write_text(
@@ -57,7 +59,10 @@ def test_load_valid_watchlist_plan(
     tmp_path: Path,
 ) -> None:
     plan_path = write_plan(
-        tmp_path / "plan.json"
+        tmp_path / "plan.json",
+        cycle_id=(
+            "cycle-20260803-174600-a1b2c3d4"
+        ),
     )
 
     plan = load_watchlist_plan(plan_path)
@@ -71,6 +76,9 @@ def test_load_valid_watchlist_plan(
         "HYFM",
         "EZRA",
         "NVDA",
+    )
+    assert plan.cycle_id == (
+        "cycle-20260803-174600-a1b2c3d4"
     )
 
 
@@ -124,7 +132,10 @@ def test_apply_plan_dry_run(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     plan_path = write_plan(
-        tmp_path / "reviewed-plan.json"
+        tmp_path / "reviewed-plan.json",
+        cycle_id=(
+            "cycle-20260803-174600-a1b2c3d4"
+        ),
     )
 
     output_dir = tmp_path / "output"
@@ -176,4 +187,7 @@ def test_apply_plan_dry_run(
     )
     assert record["record_origin"] == (
         RECORD_ORIGIN_PLAN_PREVIEW
+    )
+    assert record["cycle_id"] == (
+        "cycle-20260803-174600-a1b2c3d4"
     )

@@ -6,6 +6,7 @@ import pytest
 
 from watchlist_submission import (
     RECORD_ORIGIN_DIRECT_SUBMISSION,
+    RECORD_ORIGIN_WATCHLIST_CYCLE,
     build_watchlist_command,
     normalize_symbols,
     submit_watchlist_symbols,
@@ -305,3 +306,38 @@ def test_invalid_record_origin_is_rejected(
             output_dir=tmp_path,
             record_origin="unknown_origin",
         )
+
+
+def test_cycle_id_is_saved_and_used_in_filename(
+    tmp_path: Path,
+) -> None:
+    cycle_id = (
+        "cycle-20260803-174600-a1b2c3d4"
+    )
+
+    result = submit_watchlist_symbols(
+        mode="replace",
+        symbols=["AAPL", "MSFT"],
+        submit=False,
+        output_dir=tmp_path,
+        created_at=CREATED_AT,
+        record_origin=(
+            RECORD_ORIGIN_WATCHLIST_CYCLE
+        ),
+        cycle_id=cycle_id,
+    )
+
+    assert result.run_record_path.name == (
+        f"{cycle_id}-wl-replace-run.json"
+    )
+
+    record = json.loads(
+        result.run_record_path.read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert record["cycle_id"] == cycle_id
+    assert record["record_origin"] == (
+        RECORD_ORIGIN_WATCHLIST_CYCLE
+    )

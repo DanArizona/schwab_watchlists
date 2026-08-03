@@ -24,6 +24,7 @@ class WatchlistPlan:
     mode: str
     scanner_command: str
     symbols: tuple[str, ...]
+    cycle_id: str | None
 
 
 def load_watchlist_plan(
@@ -132,10 +133,25 @@ def load_watchlist_plan(
             "creation time."
         )
 
+    raw_cycle_id = data.get("cycle_id")
+
+    if raw_cycle_id is None:
+        cycle_id = None
+    elif (
+        isinstance(raw_cycle_id, str)
+        and raw_cycle_id.strip()
+    ):
+        cycle_id = raw_cycle_id.strip()
+    else:
+        raise ValueError(
+            "Watchlist plan contains an invalid cycle_id."
+        )
+
     return WatchlistPlan(
         source_path=resolved_path,
         created_at=created_at.strip(),
         mode=mode,
         scanner_command=expected_command,
         symbols=normalized_symbols,
+        cycle_id=cycle_id,
     )

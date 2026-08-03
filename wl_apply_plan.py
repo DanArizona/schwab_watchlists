@@ -115,6 +115,10 @@ def main(
     print("=" * 72)
     print(f"Plan file        : {plan.source_path}")
     print(f"Plan created     : {plan.created_at}")
+    print(
+        f"Cycle ID         : "
+        f"{plan.cycle_id or '(none)'}"
+    )
     print(f"Mode             : {plan.mode}")
     print(f"Scanner command  : {plan.scanner_command}")
     print(f"Symbol count     : {len(plan.symbols)}")
@@ -161,6 +165,7 @@ def main(
                 if args.submit
                 else RECORD_ORIGIN_PLAN_PREVIEW
             ),
+            cycle_id=plan.cycle_id,
         )
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
