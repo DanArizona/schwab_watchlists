@@ -191,3 +191,67 @@ def test_apply_plan_dry_run(
     assert record["cycle_id"] == (
         "cycle-20260803-174600-a1b2c3d4"
     )
+
+
+def test_apply_cycle_plan_does_not_overwrite_source(
+    tmp_path: Path,
+) -> None:
+    cycle_id = (
+        "cycle-20260803-181600-a1b2c3d4"
+    )
+
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+
+    plan_path = write_plan(
+        output_dir
+        / f"{cycle_id}-wl-replace-run.json",
+        cycle_id=cycle_id,
+    )
+
+    original_plan_text = plan_path.read_text(
+        encoding="utf-8"
+    )
+
+    exit_code = wl_apply_plan.main(
+        [
+            "--plan",
+            str(plan_path),
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    assert exit_code == 0
+
+    # The frozen source plan must remain unchanged.
+    assert plan_path.read_text(
+        encoding="utf-8"
+    ) == original_plan_text
+
+    run_files = list(
+        output_dir.glob(
+            "*-wl-replace-run.json"
+        )
+    )
+
+    assert len(run_files) == 2
+
+    derived_files = [
+        path
+        for path in run_files
+        if path != plan_path
+    ]
+
+    assert len(derived_files) == 1
+
+    derived_record = json.loads(
+        derived_files[0].read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert derived_record["cycle_id"] == cycle_id
+    assert derived_record[
+        "source_plan_file"
+    ] == str(plan_path.resolve())

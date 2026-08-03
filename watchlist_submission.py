@@ -203,7 +203,11 @@ def save_watchlist_run_record(
 
     filename_prefix = (
         normalized_cycle_id
-        if normalized_cycle_id is not None
+        if (
+            normalized_cycle_id is not None
+            and record_origin
+            == RECORD_ORIGIN_WATCHLIST_CYCLE
+        )
         else timestamp
     )
 
