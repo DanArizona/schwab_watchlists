@@ -113,6 +113,8 @@ In the current development environment:
 | `output/`                 | Generated API responses, symbol lists, and run records.                                     |
 | `watchlist_plan.py`       | Loads and validates frozen Watchlist dry-run plans.                                         |
 | `wl_apply_plan.py`        | Previews or submits an exact reviewed Watchlist plan.                                       |
+| `watchlist_plan_index.py` | Discovers reviewed Watchlist plans and linked successful applications.                      |
+| `wl_list_plans.py`        | Lists recent reviewed plans and their application status.                                   |
 
 ## Requirements
 
@@ -588,6 +590,51 @@ The apply command:
 
 This provides a repeatable review-and-submit workflow without retyping
 symbols and without making a second market-data request.
+
+
+## List reviewed Watchlist plans
+
+List the ten most recent original dry-run plans:
+
+```cmd
+python wl_list_plans.py
+```
+
+Each plan is shown as:
+
+- `REVIEWED` when no linked successful application exists;
+- `APPLIED` when a successful `wl_apply_plan.py --submit` run links back
+  to that plan.
+
+Show only plans that have not been applied:
+
+```cmd
+python wl_list_plans.py --pending-only
+```
+
+Show only replacement plans:
+
+```cmd
+python wl_list_plans.py --mode replace
+```
+
+Change the number displayed:
+
+```cmd
+python wl_list_plans.py --limit 20
+```
+
+An application is considered successful only when its linked run record
+has:
+
+```text
+submitted  = true
+return_code = 0
+```
+
+Historical operations submitted directly through `wl_submit.py` cannot
+be associated retroactively unless their run records contain a
+`source_plan_file`.
 
 
 ## Live Watchlist submission
