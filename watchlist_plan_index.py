@@ -13,6 +13,7 @@ from typing import Any
 
 from watchlist_submission import (
     COMMAND_FOR_MODE,
+    RECORD_ORIGIN_SCHWAB_MOVERS,
     normalize_symbols,
 )
 
@@ -25,6 +26,7 @@ class WatchlistPlanEntry:
     created_at: str
     mode: str
     symbols: tuple[str, ...]
+    record_origin: str | None
     applied_run_path: Path | None = None
     applied_at: str | None = None
 
@@ -102,11 +104,21 @@ def _load_json_object(
 
 def discover_watchlist_plans(
     output_dir: Path,
+    *,
+    include_legacy: bool = False,
 ) -> WatchlistPlanIndex:
     """
     Discover original dry-run plans and linked applications.
 
-    Original plans have submitted=false and no source_plan_file.
+    Current original plans have:
+
+    - record_origin=schwab_movers;
+    - submitted=false; and
+    - no source_plan_file.
+
+    Records without record_origin are included only when
+    include_legacy=True.
+
     A plan is considered applied only when a later record:
 
     - has submitted=true;
@@ -213,6 +225,25 @@ def discover_watchlist_plans(
             # wl_apply_plan.py, not an original plan.
             continue
 
+
+        record_origin = data.get(
+            "record_origin"
+        )
+
+        if (
+            record_origin
+            == RECORD_ORIGIN_SCHWAB_MOVERS
+        ):
+            pass
+        elif (
+            include_legacy
+            and record_origin is None
+        ):
+            pass
+        else:
+            continue
+
+
         mode = data.get("mode")
 
         if (
@@ -273,6 +304,7 @@ def discover_watchlist_plans(
                 created_at=created_at,
                 mode=mode,
                 symbols=symbols,
+                record_origin=record_origin,                
                 applied_run_path=(
                     application.run_path
                     if application is not None

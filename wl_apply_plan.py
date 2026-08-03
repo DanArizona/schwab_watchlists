@@ -16,6 +16,8 @@ from pathlib import Path
 
 from watchlist_plan import load_watchlist_plan
 from watchlist_submission import (
+    RECORD_ORIGIN_PLAN_APPLICATION,
+    RECORD_ORIGIN_PLAN_PREVIEW,
     build_watchlist_command,
     submit_watchlist_symbols,
 )
@@ -154,6 +156,11 @@ def main(
             output_dir=args.output_dir,
             source_plan_path=plan.source_path,
             source_plan_created_at=plan.created_at,
+            record_origin=(
+                RECORD_ORIGIN_PLAN_APPLICATION
+                if args.submit
+                else RECORD_ORIGIN_PLAN_PREVIEW
+            ),
         )
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

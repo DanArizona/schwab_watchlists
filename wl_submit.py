@@ -15,6 +15,7 @@ from pathlib import Path
 
 from watchlist_submission import (
     COMMAND_FOR_MODE,
+    RECORD_ORIGIN_DIRECT_SUBMISSION,
     build_watchlist_command,
     normalize_symbols,
     submit_watchlist_symbols,
@@ -220,6 +221,9 @@ def main(
             wait=args.wait,
             root=args.root,
             output_dir=args.output_dir,
+            record_origin=(
+                RECORD_ORIGIN_DIRECT_SUBMISSION
+            ),
         )
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

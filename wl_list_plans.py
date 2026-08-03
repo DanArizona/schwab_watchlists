@@ -64,6 +64,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    parser.add_argument(
+        "--include-legacy",
+        action="store_true",
+        help=(
+            "Include older unclassified dry-run "
+            "records that do not contain "
+            "record_origin."
+        ),
+    )
+
     return parser
 
 
@@ -81,6 +91,10 @@ def print_plan(
     print(
         f"  Symbols : "
         f"{' '.join(plan.symbols)}"
+    )
+    print(
+        "  Origin  : "
+        f"{plan.record_origin or 'legacy_unclassified'}"
     )
     print(f"  Plan    : {plan.plan_path}")
 
@@ -110,7 +124,8 @@ def main(
 
     try:
         index = discover_watchlist_plans(
-            args.output_dir
+            args.output_dir,
+            include_legacy=args.include_legacy,
         )
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -134,7 +149,7 @@ def main(
 
     displayed_plans = plans[: args.limit]
 
-    print("Reviewed Watchlist plans")
+    print("Generated Watchlist plans")
     print("=" * 88)
     print(
         f"Output directory : "
@@ -159,7 +174,7 @@ def main(
 
     if not displayed_plans:
         print(
-            "No matching reviewed Watchlist "
+            "No matching generated Watchlist "            
             "plans were found."
         )
         return 0

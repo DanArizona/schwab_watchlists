@@ -5,7 +5,9 @@ import pytest
 
 import wl_apply_plan
 from watchlist_plan import load_watchlist_plan
-
+from watchlist_submission import (
+    RECORD_ORIGIN_PLAN_PREVIEW,
+)
 
 def write_plan(
     path: Path,
@@ -171,4 +173,7 @@ def test_apply_plan_dry_run(
     )
     assert record["source_plan_created_at"] == (
         "2026-08-03T12:00:37-05:00"
+    )
+    assert record["record_origin"] == (
+        RECORD_ORIGIN_PLAN_PREVIEW
     )

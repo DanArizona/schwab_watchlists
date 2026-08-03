@@ -18,6 +18,7 @@ def write_run_record(
     submitted: bool = False,
     return_code: int | None = None,
     source_plan_file: str | None = None,
+    record_origin: str | None = "schwab_movers",
 ) -> Path:
     if symbols is None:
         symbols = [
@@ -49,6 +50,9 @@ def write_run_record(
         "source_plan_file": source_plan_file,
         "source_plan_created_at": None,
     }
+
+    if record_origin is not None:
+        record["record_origin"] = record_origin
 
     path.write_text(
         json.dumps(record),
@@ -261,3 +265,59 @@ def test_list_plans_pending_only(
         captured.out
     )
     assert "APPLIED" not in captured.out
+
+
+def test_direct_submission_is_not_a_plan(
+    tmp_path: Path,
+) -> None:
+    write_run_record(
+        tmp_path
+        / "2026-08-03-120000-wl-add-run.json",
+        created_at=(
+            "2026-08-03T12:00:00-05:00"
+        ),
+        mode="add",
+        symbols=["DIRECT"],
+        record_origin="direct_submission",
+    )
+
+    index = discover_watchlist_plans(
+        tmp_path
+    )
+
+    assert index.plans == ()
+
+
+def test_legacy_plan_requires_include_legacy(
+    tmp_path: Path,
+) -> None:
+    legacy_path = write_run_record(
+        tmp_path
+        / "2026-08-03-120000-wl-add-run.json",
+        created_at=(
+            "2026-08-03T12:00:00-05:00"
+        ),
+        mode="add",
+        symbols=["LEGACY"],
+        record_origin=None,
+    )
+
+    current_index = discover_watchlist_plans(
+        tmp_path
+    )
+
+    assert current_index.plans == ()
+
+    legacy_index = discover_watchlist_plans(
+        tmp_path,
+        include_legacy=True,
+    )
+
+    assert len(legacy_index.plans) == 1
+    assert legacy_index.plans[0].plan_path == (
+        legacy_path.resolve()
+    )
+    assert (
+        legacy_index.plans[0].record_origin
+        is None
+    )

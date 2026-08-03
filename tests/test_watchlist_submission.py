@@ -5,11 +5,13 @@ from pathlib import Path
 import pytest
 
 from watchlist_submission import (
+    RECORD_ORIGIN_DIRECT_SUBMISSION,
     build_watchlist_command,
     normalize_symbols,
     submit_watchlist_symbols,
 )
 from scanner_preflight import ScannerPreflightResult
+
 
 
 CREATED_AT = datetime(
@@ -94,6 +96,9 @@ def test_dry_run_does_not_publish(
         result.run_record_path.read_text(
             encoding="utf-8"
         )
+    )
+    assert record["record_origin"] == (
+        RECORD_ORIGIN_DIRECT_SUBMISSION
     )
 
     assert record["submitted"] is False
@@ -281,4 +286,22 @@ def test_failed_preflight_blocks_live_command(
             preflight_checker=failed_preflight,
             executable_finder=unexpected_finder,
             runner=unexpected_runner,
+        )
+
+
+def test_invalid_record_origin_is_rejected(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Unsupported Watchlist record origin"
+        ),
+    ):
+        submit_watchlist_symbols(
+            mode="add",
+            symbols=["AAPL"],
+            submit=False,
+            output_dir=tmp_path,
+            record_origin="unknown_origin",
         )

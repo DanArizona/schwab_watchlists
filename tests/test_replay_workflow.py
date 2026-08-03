@@ -8,6 +8,9 @@ import pytest
 
 import wl_schwab_movers
 
+from watchlist_submission import (
+    RECORD_ORIGIN_SCHWAB_MOVERS,
+)
 
 FIXTURE_PATH = (
     Path(__file__).resolve().parent
@@ -170,6 +173,9 @@ def test_replay_watchlist_dry_run_end_to_end(
         "add_wl_symbols"
     )
     assert watchlist_record["submitted"] is False
+    assert watchlist_record["record_origin"] == (
+        RECORD_ORIGIN_SCHWAB_MOVERS
+    )
     assert watchlist_record["symbol_count"] == 2
     assert watchlist_record["symbols"] == [
         "TSTA",

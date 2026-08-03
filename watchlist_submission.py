@@ -25,6 +25,17 @@ COMMAND_FOR_MODE = {
     "add": "add_wl_symbols",
     "replace": "replace_wl_symbols",
 }
+RECORD_ORIGIN_SCHWAB_MOVERS = "schwab_movers"
+RECORD_ORIGIN_DIRECT_SUBMISSION = "direct_submission"
+RECORD_ORIGIN_PLAN_PREVIEW = "plan_preview"
+RECORD_ORIGIN_PLAN_APPLICATION = "plan_application"
+
+VALID_RECORD_ORIGINS = frozenset({
+    RECORD_ORIGIN_SCHWAB_MOVERS,
+    RECORD_ORIGIN_DIRECT_SUBMISSION,
+    RECORD_ORIGIN_PLAN_PREVIEW,
+    RECORD_ORIGIN_PLAN_APPLICATION,
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,8 +145,15 @@ def save_watchlist_run_record(
     preflight: ScannerPreflightResult | None = None,
     source_plan_path: Path | None = None,
     source_plan_created_at: str | None = None,
+    record_origin: str = RECORD_ORIGIN_DIRECT_SUBMISSION,
 ) -> Path:
     """Save a JSON record for one Watchlist operation."""
+
+    if record_origin not in VALID_RECORD_ORIGINS:
+        raise ValueError(
+            "Unsupported Watchlist record origin: "
+            f"{record_origin}"
+        )
 
     now = created_at or datetime.now().astimezone()
 
@@ -160,6 +178,7 @@ def save_watchlist_run_record(
 
     record = {
         "created_at": now.isoformat(timespec="seconds"),
+        "record_origin": record_origin,
         "mode": mode,
         "scanner_command": COMMAND_FOR_MODE[mode],
         "submitted": submitted,
@@ -219,6 +238,7 @@ def submit_watchlist_symbols(
     created_at: datetime | None = None,
     source_plan_path: Path | None = None,
     source_plan_created_at: str | None = None,
+    record_origin: str = RECORD_ORIGIN_DIRECT_SUBMISSION,
 ) -> WatchlistSubmissionResult:
     """
     Preview or publish one Watchlist command.
@@ -249,6 +269,7 @@ def submit_watchlist_symbols(
             preflight=None,
             source_plan_path=source_plan_path,
             source_plan_created_at=source_plan_created_at,
+            record_origin=record_origin,
         )
 
         return WatchlistSubmissionResult(
@@ -311,6 +332,7 @@ def submit_watchlist_symbols(
         preflight=preflight,
         source_plan_path=source_plan_path,
         source_plan_created_at=source_plan_created_at,
+        record_origin=record_origin,
     )
 
     return WatchlistSubmissionResult(

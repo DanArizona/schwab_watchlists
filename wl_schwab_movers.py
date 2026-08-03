@@ -38,11 +38,6 @@ from candidate_pipeline import (
     run_candidate_pipeline,
 )
 
-
-
-
-
-
 from schwab_movers_source import (
     FREQUENCY_CHOICES,
     MARKET_CHOICES,
@@ -51,14 +46,10 @@ from schwab_movers_source import (
     load_schwab_movers_replay,
 )
 
-
-
-
-
-
 from candidate_outputs import write_candidate_outputs
 from watchlist_submission import (
     COMMAND_FOR_MODE,
+    RECORD_ORIGIN_SCHWAB_MOVERS,
     build_watchlist_command,
     submit_watchlist_symbols,
 )
@@ -875,6 +866,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     wait=args.wait,
                     root=args.root,
                     output_dir=output_dir,
+                    record_origin=(
+                        RECORD_ORIGIN_SCHWAB_MOVERS
+                    ),
                 )
             )
         except RuntimeError as exc:
