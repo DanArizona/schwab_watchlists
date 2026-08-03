@@ -111,6 +111,8 @@ In the current development environment:
 | `watchlist_submission.py` | Builds and optionally executes guarded `mb-scan-command` submissions.                       |
 | `tests/`                  | Automated unit tests.                                                                       |
 | `output/`                 | Generated API responses, symbol lists, and run records.                                     |
+| `watchlist_plan.py`       | Loads and validates frozen Watchlist dry-run plans.                                         |
+| `wl_apply_plan.py`        | Previews or submits an exact reviewed Watchlist plan.                                       |
 
 ## Requirements
 
@@ -545,6 +547,48 @@ python wl_schwab_movers.py ^
 ```
 
 Review the accepted symbols and generated command carefully.
+
+## Apply a reviewed Watchlist plan
+
+A Movers dry run creates a frozen Watchlist run record containing the
+exact reviewed mode and symbols.
+
+For example:
+
+```text
+output\2026-08-03-12-00-37-wl-replace-run.json
+```
+
+Preview that saved plan without contacting Schwab:
+
+```cmd
+python wl_apply_plan.py ^
+    --plan output\2026-08-03-12-00-37-wl-replace-run.json ^
+    --root "\\El-Cheapo\SCANCTRL"
+```
+
+After reviewing the frozen symbols again, submit that exact plan:
+
+```cmd
+python wl_apply_plan.py ^
+    --plan output\2026-08-03-12-00-37-wl-replace-run.json ^
+    --submit ^
+    --root "\\El-Cheapo\SCANCTRL"
+```
+
+The apply command:
+
+- accepts only an unsubmitted dry-run record;
+- validates the saved mode and symbol list;
+- ignores the saved executable command;
+- rebuilds the command from the validated data;
+- performs the normal scanner-readiness preflight;
+- never contacts the Schwab API;
+- creates a new submission run record.
+
+This provides a repeatable review-and-submit workflow without retyping
+symbols and without making a second market-data request.
+
 
 ## Live Watchlist submission
 
