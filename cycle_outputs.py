@@ -31,6 +31,10 @@ class WatchlistCycleRecord:
     candidate_run_file: Path
     watchlist_plan_file: Path | None
     replay_file: Path | None = None
+    no_change_against_cycle_id: str | None = None
+    no_change_plan_file: Path | None = None
+    no_change_application_file: Path | None = None
+    no_change_applied_at: str | None = None
 
 
 def write_watchlist_cycle_record(
@@ -81,6 +85,20 @@ def write_watchlist_cycle_record(
             if record.replay_file is not None
             else None
         ),
+        "no_change_against_cycle_id": (
+            record.no_change_against_cycle_id
+        ),
+        "no_change_plan_file": (
+            str(record.no_change_plan_file)
+            if record.no_change_plan_file is not None
+            else None
+        ),
+        "no_change_application_file": (
+            str(record.no_change_application_file)
+            if record.no_change_application_file is not None
+            else None
+        ),
+        "no_change_applied_at": record.no_change_applied_at,
     }
 
     with output_path.open("w", encoding="utf-8", newline="\n") as output_file:

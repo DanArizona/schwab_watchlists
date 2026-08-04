@@ -12,6 +12,7 @@ from typing import Any
 CYCLE_STATE_PLAN_CREATED = "PLAN_CREATED"
 CYCLE_STATE_PREVIEWED = "PREVIEWED"
 CYCLE_STATE_APPLIED = "APPLIED"
+CYCLE_STATE_NO_CHANGE = "NO_CHANGE"
 CYCLE_STATE_APPLICATION_FAILED = "APPLICATION_FAILED"
 CYCLE_STATE_NO_CANDIDATES = "NO_CANDIDATES"
 CYCLE_STATE_PLAN_MISSING = "PLAN_MISSING"
@@ -21,6 +22,7 @@ VALID_CYCLE_STATES = frozenset({
     CYCLE_STATE_PLAN_CREATED,
     CYCLE_STATE_PREVIEWED,
     CYCLE_STATE_APPLIED,
+    CYCLE_STATE_NO_CHANGE,
     CYCLE_STATE_APPLICATION_FAILED,
     CYCLE_STATE_NO_CANDIDATES,
     CYCLE_STATE_PLAN_MISSING,
@@ -55,6 +57,10 @@ class WatchlistCycleEntry:
     application_run_path: Path | None = None
     applied_at: str | None = None
     application_return_code: int | None = None
+    no_change_against_cycle_id: str | None = None
+    no_change_plan_path: Path | None = None
+    no_change_application_path: Path | None = None
+    no_change_applied_at: str | None = None
 
     @property
     def applied(self) -> bool:
@@ -276,6 +282,18 @@ def discover_watchlist_cycles(
         watchlist_mode = data.get("watchlist_mode")
         raw_symbols = data.get("accepted_symbols")
         raw_plan_path = data.get("watchlist_plan_file")
+        raw_no_change_cycle_id = data.get(
+            "no_change_against_cycle_id"
+        )
+        raw_no_change_plan_path = data.get(
+            "no_change_plan_file"
+        )
+        raw_no_change_application_path = data.get(
+            "no_change_application_file"
+        )
+        raw_no_change_applied_at = data.get(
+            "no_change_applied_at"
+        )
 
         valid = (
             isinstance(cycle_id, str)
@@ -296,6 +314,22 @@ def discover_watchlist_cycles(
                 raw_plan_path is None
                 or isinstance(raw_plan_path, str)
             )
+            and (
+                raw_no_change_cycle_id is None
+                or isinstance(raw_no_change_cycle_id, str)
+            )
+            and (
+                raw_no_change_plan_path is None
+                or isinstance(raw_no_change_plan_path, str)
+            )
+            and (
+                raw_no_change_application_path is None
+                or isinstance(raw_no_change_application_path, str)
+            )
+            and (
+                raw_no_change_applied_at is None
+                or _parse_time(raw_no_change_applied_at) is not None
+            )
         )
 
         if not valid:
@@ -310,11 +344,29 @@ def discover_watchlist_cycles(
             if raw_plan_path is not None
             else None
         )
+        no_change_plan_path = (
+            _resolve_record_path(
+                raw_no_change_plan_path,
+                containing_file=cycle_path,
+            )
+            if raw_no_change_plan_path is not None
+            else None
+        )
+        no_change_application_path = (
+            _resolve_record_path(
+                raw_no_change_application_path,
+                containing_file=cycle_path,
+            )
+            if raw_no_change_application_path is not None
+            else None
+        )
         preview: _DerivedRecord | None = None
         application: _DerivedRecord | None = None
         successful_application: _DerivedRecord | None = None
 
-        if plan_path is None:
+        if generation_status == "no_change":
+            state = CYCLE_STATE_NO_CHANGE
+        elif plan_path is None:
             state = (
                 CYCLE_STATE_NO_CANDIDATES
                 if generation_status == "no_candidates"
@@ -383,6 +435,16 @@ def discover_watchlist_cycles(
                     application.return_code
                     if application is not None
                     else None
+                ),
+                no_change_against_cycle_id=(
+                    raw_no_change_cycle_id
+                ),
+                no_change_plan_path=no_change_plan_path,
+                no_change_application_path=(
+                    no_change_application_path
+                ),
+                no_change_applied_at=(
+                    raw_no_change_applied_at
                 ),
             )
         )

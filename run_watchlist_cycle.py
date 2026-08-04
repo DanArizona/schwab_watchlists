@@ -24,6 +24,7 @@ from schwab_movers_source import (
     load_schwab_movers_replay,
 )
 from watchlist_cycle import (
+    CYCLE_STATUS_NO_CHANGE,
     CYCLE_STATUS_PLAN_CREATED,
     run_schwab_movers_cycle,
 )
@@ -85,6 +86,15 @@ def build_parser() -> argparse.ArgumentParser:
             "After a live Schwab cycle creates its frozen plan, apply that "
             "exact plan through the normal scanner-readiness preflight. "
             "Cannot be used with --replay."
+        ),
+    )
+    parser.add_argument(
+        "--force-submit",
+        action="store_true",
+        help=(
+            "Submit even when the generated replacement exactly matches "
+            "the most recent successful cycle replacement. Requires "
+            "--submit and cannot be used with --replay."
         ),
     )
     parser.add_argument(
@@ -206,6 +216,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     replay_path: Path | None = None
 
+    if args.force_submit and not args.submit:
+        print(
+            "ERROR: --force-submit requires --submit.",
+            file=sys.stderr,
+        )
+        return 2
+
     if args.submit and args.replay is not None:
         print(
             "ERROR: --submit cannot be used with --replay. "
@@ -295,6 +312,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             root=args.root,
             wait=args.wait,
             submit_requested=args.submit,
+            suppress_unchanged=(
+                args.submit and not args.force_submit
+            ),
         )
     except SchwabdevNotInstalledError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -361,6 +381,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.submit:
         print("No Watchlist command was published.")
         return 0 if result.status == CYCLE_STATUS_PLAN_CREATED else 2
+
+    if result.status == CYCLE_STATUS_NO_CHANGE:
+        match = result.no_change_match
+        assert match is not None
+        print()
+        print("No Watchlist change detected.")
+        print(f"Matches cycle     : {match.cycle_id}")
+        print(f"Previously applied: {match.applied_at}")
+        print(f"Prior plan        : {match.source_plan_path}")
+        print(f"Prior run         : {match.application_run_path}")
+        print("No Watchlist command was published.")
+        return 0
 
     print()
     print("Applying exact frozen cycle plan...")

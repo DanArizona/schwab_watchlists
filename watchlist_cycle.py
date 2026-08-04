@@ -12,6 +12,10 @@ from candidate_outputs import CandidateOutputPaths, write_candidate_outputs
 from candidate_pipeline import CandidatePipelineResult, run_candidate_pipeline
 from cycle_outputs import WatchlistCycleRecord, write_watchlist_cycle_record
 from schwab_movers_source import SchwabMoversBatch
+from watchlist_change_detection import (
+    AppliedWatchlistSnapshot,
+    find_unchanged_replacement,
+)
 from watchlist_submission import (
     COMMAND_FOR_MODE,
     RECORD_ORIGIN_WATCHLIST_CYCLE,
@@ -21,6 +25,7 @@ from watchlist_submission import (
 )
 
 CYCLE_STATUS_PLAN_CREATED = "plan_created"
+CYCLE_STATUS_NO_CHANGE = "no_change"
 CYCLE_STATUS_NO_CANDIDATES = "no_candidates"
 MOVERS_DEMO_STRATEGY = "movers_demo_v1"
 VALID_INPUT_MODES = frozenset({"api", "replay"})
@@ -41,6 +46,7 @@ class WatchlistCycleResult:
     candidate_outputs: CandidateOutputPaths
     watchlist_plan: WatchlistSubmissionResult | None
     cycle_record_path: Path
+    no_change_match: AppliedWatchlistSnapshot | None = None
 
     @property
     def plan_created(self) -> bool:
@@ -84,6 +90,7 @@ def run_schwab_movers_cycle(
     root: Path | None = None,
     wait: float = 30.0,
     submit_requested: bool = False,
+    suppress_unchanged: bool = False,
     strategy_name: str = MOVERS_DEMO_STRATEGY,
     cycle_id: str | None = None,
     started_at: datetime | None = None,
@@ -174,6 +181,7 @@ def run_schwab_movers_cycle(
     )
 
     watchlist_plan: WatchlistSubmissionResult | None = None
+    no_change_match: AppliedWatchlistSnapshot | None = None
 
     if pipeline_result.accepted_symbols:
         watchlist_plan = submit_watchlist_symbols(
@@ -188,6 +196,14 @@ def run_schwab_movers_cycle(
             cycle_id=normalized_cycle_id,
         )
         status = CYCLE_STATUS_PLAN_CREATED
+        if suppress_unchanged:
+            no_change_match = find_unchanged_replacement(
+                output_dir=resolved_output_dir,
+                mode=mode,
+                symbols=pipeline_result.accepted_symbols,
+            )
+            if no_change_match is not None:
+                status = CYCLE_STATUS_NO_CHANGE
     else:
         status = CYCLE_STATUS_NO_CANDIDATES
 
@@ -217,6 +233,26 @@ def run_schwab_movers_cycle(
                 else None
             ),
             replay_file=resolved_replay_path,
+            no_change_against_cycle_id=(
+                no_change_match.cycle_id
+                if no_change_match is not None
+                else None
+            ),
+            no_change_plan_file=(
+                no_change_match.source_plan_path
+                if no_change_match is not None
+                else None
+            ),
+            no_change_application_file=(
+                no_change_match.application_run_path
+                if no_change_match is not None
+                else None
+            ),
+            no_change_applied_at=(
+                no_change_match.applied_at
+                if no_change_match is not None
+                else None
+            ),
         ),
     )
 
@@ -232,4 +268,5 @@ def run_schwab_movers_cycle(
         candidate_outputs=candidate_outputs,
         watchlist_plan=watchlist_plan,
         cycle_record_path=cycle_record_path,
+        no_change_match=no_change_match,
     )

@@ -19,7 +19,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "List Watchlist cycles and derive whether each plan "
-            "was created, previewed, or successfully applied."
+            "was created, previewed, applied, or skipped because it "
+            "matched the latest successful replacement."
         )
     )
     parser.add_argument(
@@ -85,6 +86,26 @@ def print_cycle(cycle: WatchlistCycleEntry) -> None:
     if cycle.preview_run_path is not None:
         print(f"  Previewed: {cycle.previewed_at}")
         print(f"  Preview  : {cycle.preview_run_path}")
+
+    if cycle.no_change_against_cycle_id is not None:
+        print(
+            f"  Matches  : "
+            f"{cycle.no_change_against_cycle_id}"
+        )
+        print(
+            f"  Prior at : "
+            f"{cycle.no_change_applied_at}"
+        )
+        if cycle.no_change_plan_path is not None:
+            print(
+                f"  Prior plan: "
+                f"{cycle.no_change_plan_path}"
+            )
+        if cycle.no_change_application_path is not None:
+            print(
+                f"  Prior run: "
+                f"{cycle.no_change_application_path}"
+            )
 
     if cycle.application_run_path is not None:
         label = "Applied" if cycle.applied else "Attempted"
