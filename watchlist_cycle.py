@@ -83,6 +83,7 @@ def run_schwab_movers_cycle(
     replay_path: Path | None = None,
     root: Path | None = None,
     wait: float = 30.0,
+    submit_requested: bool = False,
     strategy_name: str = MOVERS_DEMO_STRATEGY,
     cycle_id: str | None = None,
     started_at: datetime | None = None,
@@ -168,7 +169,7 @@ def run_schwab_movers_cycle(
             "http_status": batch.status_code if input_mode == "api" else None,
             "watchlist_action": COMMAND_FOR_MODE[mode],
             "watchlist_mode": mode,
-            "watchlist_submit_requested": False,
+            "watchlist_submit_requested": submit_requested,
         },
     )
 

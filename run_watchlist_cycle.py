@@ -1,4 +1,4 @@
-"""Run one manually initiated, dry-run Watchlist cycle."""
+"""Run one manually initiated Watchlist cycle."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import argparse
 import getpass
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from mb_tools.schwab_secure.client import (
@@ -27,7 +27,13 @@ from watchlist_cycle import (
     CYCLE_STATUS_PLAN_CREATED,
     run_schwab_movers_cycle,
 )
-from watchlist_submission import COMMAND_FOR_MODE
+from watchlist_plan import load_watchlist_plan
+from watchlist_submission import (
+    COMMAND_FOR_MODE,
+    RECORD_ORIGIN_PLAN_APPLICATION,
+    WatchlistSubmissionResult,
+    submit_watchlist_symbols,
+)
 
 DEFAULT_ECFG_NAME = "secure_schwabdev.ecfg"
 
@@ -54,10 +60,11 @@ def resolve_ecfg_path(explicit_path: Path | None) -> Path:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run one manual, dry-run Watchlist cycle from either the live "
-            "Schwab Movers endpoint or a saved response. The command creates "
+            "Run one manual Watchlist cycle from either the live Schwab "
+            "Movers endpoint or a saved response. The command creates "
             "candidate outputs, a frozen Watchlist plan, and a cycle audit "
-            "record. It never publishes a live scanner command."
+            "record. Live publication requires the explicit --submit option "
+            "and is never allowed with --replay."
         )
     )
 
@@ -69,6 +76,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Use a saved Schwab Movers JSON response instead of contacting "
             "Schwab. Without this option, the cycle retrieves live Movers."
+        ),
+    )
+    parser.add_argument(
+        "--submit",
+        action="store_true",
+        help=(
+            "After a live Schwab cycle creates its frozen plan, apply that "
+            "exact plan through the normal scanner-readiness preflight. "
+            "Cannot be used with --replay."
         ),
     )
     parser.add_argument(
@@ -134,8 +150,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help=(
-            "Scanner command root recorded in the frozen command. "
-            "No command is published."
+            "Scanner command root recorded in the frozen plan and used for "
+            "live submission when --submit is present."
         ),
     )
     parser.add_argument(
@@ -143,16 +159,60 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=30.0,
         metavar="SECONDS",
-        help="Wait value recorded in the frozen command. Default: 30.",
+        help="Maximum scanner processing wait. Default: 30.",
     )
 
     return parser
+
+
+def apply_frozen_cycle_plan(
+    *,
+    plan_path: Path,
+    expected_cycle_id: str,
+    output_dir: Path,
+    root: Path | None,
+    wait: float,
+    submitter: Callable[..., WatchlistSubmissionResult] | None = None,
+) -> WatchlistSubmissionResult:
+    """Apply the exact frozen plan created by the current cycle."""
+
+    plan = load_watchlist_plan(plan_path)
+
+    if plan.cycle_id != expected_cycle_id:
+        raise ValueError(
+            "Frozen Watchlist plan cycle_id does not match "
+            f"the active cycle: {plan.cycle_id!r} != "
+            f"{expected_cycle_id!r}."
+        )
+
+    chosen_submitter = submitter or submit_watchlist_symbols
+
+    return chosen_submitter(
+        mode=plan.mode,
+        symbols=plan.symbols,
+        submit=True,
+        wait=wait,
+        root=root,
+        output_dir=output_dir,
+        source_plan_path=plan.source_path,
+        source_plan_created_at=plan.created_at,
+        record_origin=RECORD_ORIGIN_PLAN_APPLICATION,
+        cycle_id=plan.cycle_id,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     replay_path: Path | None = None
+
+    if args.submit and args.replay is not None:
+        print(
+            "ERROR: --submit cannot be used with --replay. "
+            "Replay cycles are permanently dry-run only.",
+            file=sys.stderr,
+        )
+        return 2
 
     if args.replay is not None:
         replay_path = args.replay.expanduser().resolve()
@@ -234,6 +294,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             replay_path=replay_path,
             root=args.root,
             wait=args.wait,
+            submit_requested=args.submit,
         )
     except SchwabdevNotInstalledError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -275,6 +336,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print(f"Strategy         : {result.strategy_name}")
     print(f"Watchlist mode   : {result.watchlist_mode}")
+    print(
+        f"Submission       : "
+        f"{'LIVE' if args.submit else 'DRY RUN'}"
+    )
     print(f"Input candidates : {result.pipeline_result.input_count}")
     print(f"Accepted         : {result.pipeline_result.accepted_count}")
     print(f"Rejected         : {result.pipeline_result.rejected_count}")
@@ -292,9 +357,50 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     print(f"Watchlist plan   : {result.watchlist_plan.run_record_path}")
-    print("No Watchlist command was published.")
 
-    return 0 if result.status == CYCLE_STATUS_PLAN_CREATED else 2
+    if not args.submit:
+        print("No Watchlist command was published.")
+        return 0 if result.status == CYCLE_STATUS_PLAN_CREATED else 2
+
+    print()
+    print("Applying exact frozen cycle plan...")
+
+    try:
+        application = apply_frozen_cycle_plan(
+            plan_path=result.watchlist_plan.run_record_path,
+            expected_cycle_id=result.cycle_id,
+            output_dir=args.output_dir,
+            root=args.root,
+            wait=args.wait,
+        )
+    except ValueError as exc:
+        print(f"ERROR: Frozen plan application failed: {exc}", file=sys.stderr)
+        return 2
+    except RuntimeError as exc:
+        print(f"ERROR: Frozen plan application failed: {exc}", file=sys.stderr)
+        return 3
+
+    if application.preflight is not None:
+        print(
+            f"Scanner preflight       : "
+            f"{'READY' if application.preflight.ready else 'NOT READY'}"
+        )
+        print(f"Scanner status          : {application.preflight.status}")
+        print(f"Scanner root            : {application.preflight.root}")
+
+    print(f"mb-scan-command exit code: {application.return_code}")
+    print(f"Application record       : {application.run_record_path}")
+
+    if not application.successful:
+        print(
+            "Cycle Watchlist command was not reported as successfully "
+            "processed.",
+            file=sys.stderr,
+        )
+        return application.return_code or 1
+
+    print("Frozen cycle plan was reported as processed.")
+    return 0
 
 
 if __name__ == "__main__":
