@@ -28,6 +28,10 @@ from watchlist_cycle import (
     CYCLE_STATUS_PLAN_CREATED,
     run_schwab_movers_cycle,
 )
+from watchlist_cycle_schedule import (
+    evaluate_output_watchlist_cycle_schedule,
+    format_watchlist_cycle_schedule_decision,
+)
 from watchlist_plan import load_watchlist_plan
 from watchlist_submission import (
     COMMAND_FOR_MODE,
@@ -95,6 +99,16 @@ def build_parser() -> argparse.ArgumentParser:
             "Submit even when the generated replacement exactly matches "
             "the most recent successful cycle replacement. Requires "
             "--submit and cannot be used with --replay."
+        ),
+    )
+    parser.add_argument(
+        "--require-due",
+        action="store_true",
+        help=(
+            "Before contacting Schwab, require the configured Watchlist "
+            "cycle schedule to report that a cycle is due. Cannot be used "
+            "with --replay. A not-due decision exits successfully without "
+            "creating cycle outputs or publishing a scanner command."
         ),
     )
     parser.add_argument(
@@ -231,6 +245,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
+    if args.require_due and args.replay is not None:
+        print(
+            "ERROR: --require-due cannot be used with --replay. "
+            "Schedule gating applies only to live cycles.",
+            file=sys.stderr,
+        )
+        return 2
+
     if args.replay is not None:
         replay_path = args.replay.expanduser().resolve()
 
@@ -264,6 +286,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as exc:
         print(f"ERROR: Invalid filter settings: {exc}", file=sys.stderr)
         return 2
+
+    if args.require_due:
+        try:
+            schedule_decision = (
+                evaluate_output_watchlist_cycle_schedule(
+                    args.output_dir
+                )
+            )
+        except ValueError as exc:
+            print(
+                f"ERROR: Cycle schedule failed: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+
+        for line in format_watchlist_cycle_schedule_decision(
+            schedule_decision
+        ):
+            print(line)
+        print()
+
+        if not schedule_decision.due:
+            print(
+                "No Watchlist cycle was started because the "
+                "schedule reports that a cycle is not due."
+            )
+            return 0
 
     client = None
     ecfg_path: Path | None = None
