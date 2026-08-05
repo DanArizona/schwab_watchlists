@@ -32,7 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Report whether one Watchlist cycle is due. The default policy "
-            "uses America/Chicago weekdays, an 08:30-15:00 session, one-minute "
+            "uses America/New_York weekdays, a 09:30-16:00 session, one-minute "
             "cadence for the first 10 minutes, five-minute cadence through "
             "the first hour, and ten-minute cadence afterward. Exchange "
             "holidays are not yet modeled."

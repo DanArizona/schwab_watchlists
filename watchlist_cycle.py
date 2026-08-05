@@ -11,6 +11,7 @@ from candidate_filters import FilterSettings
 from candidate_outputs import CandidateOutputPaths, write_candidate_outputs
 from candidate_pipeline import CandidatePipelineResult, run_candidate_pipeline
 from cycle_outputs import WatchlistCycleRecord, write_watchlist_cycle_record
+from market_clock import market_now, to_market_time
 from schwab_movers_source import SchwabMoversBatch
 from watchlist_change_detection import (
     AppliedWatchlistSnapshot,
@@ -62,7 +63,14 @@ def generate_cycle_id(
 ) -> str:
     """Create a unique, filename-safe Watchlist cycle identifier."""
 
-    cycle_time = started_at or datetime.now().astimezone()
+    cycle_time = (
+        market_now()
+        if started_at is None
+        else to_market_time(
+            started_at,
+            field_name="started_at",
+        )
+    )
     suffix = (unique_suffix or uuid.uuid4().hex[:8]).strip().lower()
 
     if not suffix or not suffix.isalnum():
@@ -118,7 +126,14 @@ def run_schwab_movers_cycle(
     if not normalized_strategy:
         raise ValueError("Watchlist cycle strategy_name cannot be empty.")
 
-    cycle_started_at = started_at or datetime.now().astimezone()
+    cycle_started_at = (
+        market_now()
+        if started_at is None
+        else to_market_time(
+            started_at,
+            field_name="started_at",
+        )
+    )
     normalized_cycle_id = (
         normalize_cycle_id(cycle_id)
         if cycle_id is not None
@@ -207,7 +222,14 @@ def run_schwab_movers_cycle(
     else:
         status = CYCLE_STATUS_NO_CANDIDATES
 
-    cycle_completed_at = completed_at or datetime.now().astimezone()
+    cycle_completed_at = (
+        market_now()
+        if completed_at is None
+        else to_market_time(
+            completed_at,
+            field_name="completed_at",
+        )
+    )
 
     cycle_record_path = write_watchlist_cycle_record(
         output_dir=resolved_output_dir,

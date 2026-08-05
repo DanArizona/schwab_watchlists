@@ -7,6 +7,7 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from market_clock import MARKET_TIMEZONE_NAME
 from watchlist_cycle_index import discover_watchlist_cycles
 
 SCHEDULE_STATUS_DUE = "DUE"
@@ -26,9 +27,9 @@ SCHEDULE_PHASE_NON_TRADING_DAY = "non_trading_day"
 class WatchlistCycleSchedulePolicy:
     """Configurable weekday/session cadence for Watchlist cycles."""
 
-    timezone_name: str = "America/Chicago"
-    session_start: time = time(8, 30)
-    session_end: time = time(15, 0)
+    timezone_name: str = MARKET_TIMEZONE_NAME
+    session_start: time = time(9, 30)
+    session_end: time = time(16, 0)
     opening_phase: timedelta = timedelta(minutes=10)
     early_phase: timedelta = timedelta(minutes=60)
     opening_interval: timedelta = timedelta(minutes=1)
@@ -325,6 +326,7 @@ def format_watchlist_cycle_schedule_decision(
         "Watchlist cycle schedule",
         "=" * 72,
         f"Evaluated         : {decision.evaluated_at.isoformat(timespec='seconds')}",
+        f"Market timezone   : {getattr(decision.session_start.tzinfo, 'key', str(decision.session_start.tzinfo))}",
         f"Session           : {decision.session_start.strftime('%H:%M')} - {decision.session_end.strftime('%H:%M')} {decision.session_start.tzname()}",
         f"Phase             : {decision.phase}",
         f"Decision          : {decision.status}",

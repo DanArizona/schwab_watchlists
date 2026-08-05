@@ -11,7 +11,7 @@ from watchlist_cycle_schedule import (
     evaluate_watchlist_cycle_schedule,
 )
 
-CENTRAL = ZoneInfo("America/Chicago")
+EASTERN = ZoneInfo("America/New_York")
 
 
 def test_require_due_stops_before_schwab_access(
@@ -20,7 +20,14 @@ def test_require_due_stops_before_schwab_access(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     decision = evaluate_watchlist_cycle_schedule(
-        now=datetime(2026, 8, 4, 18, 42, tzinfo=CENTRAL)
+        now=datetime(
+            2026,
+            8,
+            4,
+            19,
+            42,
+            tzinfo=EASTERN,
+        )
     )
 
     monkeypatch.setattr(
@@ -30,7 +37,9 @@ def test_require_due_stops_before_schwab_access(
     )
 
     def unexpected_ecfg_path(path):
-        raise AssertionError("Schwab configuration access was unexpected.")
+        raise AssertionError(
+            "Schwab configuration access was unexpected."
+        )
 
     monkeypatch.setattr(
         run_watchlist_cycle,
@@ -51,8 +60,13 @@ def test_require_due_stops_before_schwab_access(
 
     assert exit_code == 0
     assert captured.err == ""
-    assert "Decision          : OUTSIDE_SESSION" in captured.out
-    assert "No Watchlist cycle was started" in captured.out
+    assert (
+        "Decision          : OUTSIDE_SESSION"
+        in captured.out
+    )
+    assert "No Watchlist cycle was started" in (
+        captured.out
+    )
     assert not list(tmp_path.glob("cycle-*.json"))
 
 
@@ -71,4 +85,7 @@ def test_require_due_cannot_be_used_with_replay(
     captured = capsys.readouterr()
 
     assert exit_code == 2
-    assert "--require-due cannot be used with --replay" in captured.err
+    assert (
+        "--require-due cannot be used with --replay"
+        in captured.err
+    )
