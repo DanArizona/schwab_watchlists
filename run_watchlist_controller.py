@@ -46,6 +46,9 @@ from watchlist_cycle_schedule import (
     format_watchlist_cycle_schedule_decision,
 )
 from watchlist_submission import COMMAND_FOR_MODE
+from scanner_export_coordination import (
+    apply_watchlist_plan_with_export_suspension,
+)
 
 
 LOCK_HELD_EXIT_CODE = 75
@@ -323,6 +326,9 @@ def run_due_cycle(
     plan_applier: Callable[..., Any] = (
         apply_frozen_cycle_plan
     ),
+    coordinated_applier: Callable[..., Any] = (
+        apply_watchlist_plan_with_export_suspension
+    ),
 ) -> int:
     """
     Run one due live cycle with an already-open Schwab client.
@@ -388,9 +394,13 @@ def run_due_cycle(
         return 0
 
     print()
-    print("Applying exact frozen cycle plan...")
+    print(
+        "Suspending scanner exports and applying "
+        "exact frozen cycle plan..."
+    )
 
-    application = plan_applier(
+    coordinated = coordinated_applier(
+        plan_applier=plan_applier,
         plan_path=(
             result.watchlist_plan.run_record_path
         ),
@@ -398,6 +408,16 @@ def run_due_cycle(
         output_dir=args.output_dir,
         root=args.root,
         wait=args.wait,
+    )
+    application = coordinated.application
+
+    print(
+        f"suspend_exports exit code : "
+        f"{coordinated.suspend_command.return_code}"
+    )
+    print(
+        f"resume_exports exit code  : "
+        f"{coordinated.resume_command.return_code}"
     )
 
     if application.preflight is not None:

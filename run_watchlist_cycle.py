@@ -8,6 +8,7 @@ import os
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 from mb_tools.schwab_secure.client import (
     SchwabdevNotInstalledError,
@@ -197,6 +198,7 @@ def apply_frozen_cycle_plan(
     root: Path | None,
     wait: float,
     submitter: Callable[..., WatchlistSubmissionResult] | None = None,
+    preflight_checker: Callable[..., Any] | None = None,
 ) -> WatchlistSubmissionResult:
     """Apply the exact frozen plan created by the current cycle."""
 
@@ -211,18 +213,25 @@ def apply_frozen_cycle_plan(
 
     chosen_submitter = submitter or submit_watchlist_symbols
 
-    return chosen_submitter(
-        mode=plan.mode,
-        symbols=plan.symbols,
-        submit=True,
-        wait=wait,
-        root=root,
-        output_dir=output_dir,
-        source_plan_path=plan.source_path,
-        source_plan_created_at=plan.created_at,
-        record_origin=RECORD_ORIGIN_PLAN_APPLICATION,
-        cycle_id=plan.cycle_id,
-    )
+    submission_kwargs: dict[str, Any] = {
+        "mode": plan.mode,
+        "symbols": plan.symbols,
+        "submit": True,
+        "wait": wait,
+        "root": root,
+        "output_dir": output_dir,
+        "source_plan_path": plan.source_path,
+        "source_plan_created_at": plan.created_at,
+        "record_origin": RECORD_ORIGIN_PLAN_APPLICATION,
+        "cycle_id": plan.cycle_id,
+    }
+
+    if preflight_checker is not None:
+        submission_kwargs["preflight_checker"] = (
+            preflight_checker
+        )
+
+    return chosen_submitter(**submission_kwargs)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
