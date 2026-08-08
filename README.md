@@ -41,6 +41,14 @@ The following capabilities are working:
 * Automated tests for models, filters, pipelines, outputs, source conversion, and Watchlist submission
 * Saved Schwab Movers response replay without API authentication
 * Watchlist dry-run from replayed Movers data
+* Frozen Watchlist plan validation and exact-plan application
+* Scanner-readiness preflight before live Watchlist changes
+* Daily Watchlist controller using New York market time
+* Market-session-aware Watchlist update scheduling
+* Suppression of unchanged ordered Watchlist replacements
+* Export suspension around coordinated Watchlist replacement
+* Automatic export-resume attempt after successful or failed replacement attempts
+* Live coordinated Watchlist replacement tested with `ToS_scanner`
 
 Run the current test suite with:
 
@@ -98,23 +106,27 @@ In the current development environment:
 
 ## Repository layout
 
-| File                      | Purpose                                                                                     |
-| ------------------------- | ------------------------------------------------------------------------------------------- |
-| `schwab_api_probe.py`     | Tests secure Schwab authentication and basic API access.                                    |
-| `wl_schwab_movers.py`     | Main Schwab Movers CLI. Retrieves, filters, reports, saves, and optionally submits symbols. |
-| `wl_submit.py`            | Standalone CLI for previewing or submitting a supplied symbol list.                         |
-| `schwab_movers_source.py` | Retrieves Movers data and converts records into source-neutral candidates.                  |
-| `candidate_model.py`      | Defines `SymbolCandidate` and market-session concepts.                                      |
-| `candidate_filters.py`    | Defines filter settings, decisions, and filtering behavior.                                 |
-| `candidate_pipeline.py`   | Runs an ordered candidate collection through the filter layer.                              |
-| `candidate_outputs.py`    | Writes raw data, accepted symbols, and structured run records.                              |
-| `watchlist_submission.py` | Builds and optionally executes guarded `mb-scan-command` submissions.                       |
-| `tests/`                  | Automated unit tests.                                                                       |
-| `output/`                 | Generated API responses, symbol lists, and run records.                                     |
-| `watchlist_plan.py`       | Loads and validates frozen Watchlist dry-run plans.                                         |
-| `wl_apply_plan.py`        | Previews or submits an exact reviewed Watchlist plan.                                       |
-| `watchlist_plan_index.py` | Discovers generated Movers Watchlist plans and linked successful applications.              |
-| `wl_list_plans.py`        | Lists generated plans, their application status, and optional legacy records.                |
+| File                              | Purpose                                                                                     |
+| ----------------------------------| ------------------------------------------------------------------------------------------- |
+| `schwab_api_probe.py`             | Tests secure Schwab authentication and basic API access.                                    |
+| `wl_schwab_movers.py`             | Main Schwab Movers CLI. Retrieves, filters, reports, saves, and optionally submits symbols. |
+| `wl_submit.py`                    | Standalone CLI for previewing or submitting a supplied symbol list.                         |
+| `schwab_movers_source.py`         | Retrieves Movers data and converts records into source-neutral candidates.                  |
+| `candidate_model.py`              | Defines `SymbolCandidate` and market-session concepts.                                      |
+| `candidate_filters.py`            | Defines filter settings, decisions, and filtering behavior.                                 |
+| `candidate_pipeline.py`           | Runs an ordered candidate collection through the filter layer.                              |
+| `candidate_outputs.py`            | Writes raw data, accepted symbols, and structured run records.                              |
+| `watchlist_submission.py`         | Builds and optionally executes guarded `mb-scan-command` submissions.                       |
+| `tests/`                          | Automated unit tests.                                                                       |
+| `output/`                         | Generated API responses, symbol lists, and run records.                                     |
+| `watchlist_plan.py`               | Loads and validates frozen Watchlist dry-run plans.                                         |
+| `wl_apply_plan.py`                | Previews or submits an exact reviewed Watchlist plan.                                       |
+| `watchlist_plan_index.py`         | Discovers generated Movers Watchlist plans and linked successful applications.              |
+| `wl_list_plans.py`                | Lists generated plans, their application status, and optional legacy records.               |
+| `run_watchlist_cycle.py`          | Builds and applies one frozen Watchlist cycle plan.                                         |
+| `run_watchlist_controller.py`     | Runs the long-lived daily Watchlist controller and scheduled cycle selection.               |
+| `scanner_preflight.py`            | Validates scanner heartbeat and operational readiness before Watchlist changes.             |
+| `scanner_export_coordination.py`  | Suspends timed exports around Watchlist replacement and guarantees a resume attempt.        |
 
 ## Requirements
 
@@ -686,6 +698,34 @@ wl_apply_plan.py
     previews or applies an existing frozen plan
 ```
 
+## Daily Watchlist controller
+
+`run_watchlist_controller.py` provides the long-running MasterBot controller for scheduled Watchlist generation and replacement.
+
+The controller uses `America/New_York` as the canonical market timezone.
+
+The current weekday schedule is:
+
+- 09:30 through 09:40: evaluate every minute
+- 09:40 through 10:30: evaluate every 5 minutes
+- 10:30 through 16:00: evaluate every 10 minutes
+
+The current scheduler does not yet contain a stock-exchange holiday calendar.
+
+The controller authenticates to Schwab once at startup and keeps the Schwab client available for the controller session rather than prompting for credentials on every cycle.
+
+Each scheduled cycle produces a frozen Watchlist plan. Before an exact replacement is submitted, the controller compares the ordered symbol list with the previously applied Watchlist and suppresses an unchanged replacement.
+
+For a live replacement, the coordinated sequence is:
+
+1. Verify that the scanner is healthy, idle, running, and not paused.
+2. Send `suspend_exports`.
+3. Verify that the scanner reports the healthy `exports_suspended` state.
+4. Apply the exact frozen Watchlist replacement plan.
+5. Send `resume_exports` in a `finally` recovery path.
+6. Verify that the scanner has returned to its normal ready state.
+
+The resume attempt is made even if Watchlist replacement fails. If export resumption itself fails, the controller reports a recovery error because timed exports may remain suspended.
 
 ## Live Watchlist submission
 
@@ -748,7 +788,9 @@ The current implementation uses several layers of protection:
 10. The preflight requires a current `HEALTHY` heartbeat, an idle loop, `running=true`, and `paused=false`.
 11. A failed preflight prevents executable lookup and command publication.
 
-The `replace` operation is potentially destructive because it replaces the current Default Watchlist symbol list. Export or otherwise preserve the existing Watchlist before the first live replace test.
+The daily controller adds another coordination layer around live replacement. It begins from the normal strict ready state, deliberately suspends scheduled exports, permits the replacement while the scanner reports `exports_suspended`, and then resumes exports in a recovery path.
+
+The `replace` operation is potentially destructive because it replaces the current Default Watchlist symbol list. Export or otherwise preserve the existing Watchlist before a live replacement when the current contents may need to be recovered.
 
 ## Empty Movers responses
 
@@ -854,8 +896,6 @@ The following items are planned or under consideration. They are **not yet imple
 
 ### Near-term
 
-* Repeatable Movers integration tests using captured raw JSON
-* First carefully controlled live Movers-to-Watchlist test
 * Improved CLI descriptions and examples
 * Additional validation of symbol formats
 * Better handling and reporting of empty or unusual API responses
@@ -898,11 +938,7 @@ The following items are planned or under consideration. They are **not yet imple
 
 ### Operations
 
-* Scheduled generation
-* Market-session-aware execution
-* Scanner readiness checks
 * Notifications
-* Failure recovery
 * Retention and archival of output records
 * Configuration profiles for different Watchlist strategies
 
