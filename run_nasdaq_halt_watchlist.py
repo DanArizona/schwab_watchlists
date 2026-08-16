@@ -220,7 +220,7 @@ def main() -> int:
             )
 
         else:
-            new_symbols = monitor.new_symbols(
+            new_symbols = monitor.pending_symbols(
                 feed.records,
                 session_date=session_date,
             )
@@ -289,6 +289,11 @@ def main() -> int:
                     print(
                         f"  Run record   : "
                         f"{result.run_record_path}"
+                    )
+
+                    monitor.mark_seen(
+                        new_symbols,
+                        session_date=session_date,
                     )
 
                     print(
