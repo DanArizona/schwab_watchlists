@@ -130,6 +130,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for dry-run Watchlist run records.",
     )
 
+    parser.add_argument(
+        "--submit",
+        action="store_true",
+        help=(
+            "Actually publish add_wl_symbols commands. "
+            "Without this option, only perform a dry run."
+        ),
+    )
+
     return parser
 
 
@@ -164,6 +173,14 @@ def main() -> int:
         )
         return 2
 
+    if args.submit and args.date is not None:
+        print(
+            "ERROR: --submit cannot be used with --date. "
+            "Historical replay is dry-run only.",
+            file=sys.stderr,
+        )
+        return 2
+
     monitor = NasdaqHaltMonitor()
 
     if args.date is None:
@@ -186,7 +203,10 @@ def main() -> int:
     print(f"Fetch timeout  : {args.timeout:g} seconds")
     print("Reason codes   : LUDP, M")
     print("Watchlist mode : add")
-    print("Submission     : DRY RUN ONLY")
+    print(
+        f"Submission     : "
+        f"{'LIVE' if args.submit else 'DRY RUN'}"
+    )    
     print()
 
     for poll_number in range(1, args.polls + 1):
@@ -270,7 +290,7 @@ def main() -> int:
                     result = submit_watchlist_symbols(
                         mode="add",
                         symbols=new_symbols,
-                        submit=False,
+                        submit=args.submit,
                         wait=args.wait,
                         root=args.root,
                         output_dir=args.output_dir,
@@ -291,14 +311,52 @@ def main() -> int:
                         f"{result.run_record_path}"
                     )
 
-                    monitor.mark_seen(
-                        new_symbols,
-                        session_date=session_date,
-                    )
+                    if not args.submit:
+                        monitor.mark_seen(
+                            new_symbols,
+                            session_date=session_date,
+                        )
 
-                    print(
-                        "  Published    : NO"
-                    )
+                        print(
+                            "  Published    : NO"
+                        )
+
+                    else:
+                        if result.preflight is not None:
+                            print(
+                                f"  Preflight    : "
+                                f"{'READY' if result.preflight.ready else 'NOT READY'}"
+                            )
+
+                            print(
+                                f"  Scanner      : "
+                                f"{result.preflight.status}"
+                            )
+
+                        print(
+                            f"  Exit code    : "
+                            f"{result.return_code}"
+                        )
+
+                        if result.submitted and result.successful:
+                            monitor.mark_seen(
+                                new_symbols,
+                                session_date=session_date,
+                            )
+
+                            print(
+                                "  Published    : YES"
+                            )
+
+                        else:
+                            print(
+                                "  Published    : NO"
+                            )
+
+                            print(
+                                "  Symbols remain pending "
+                                "for the next poll."
+                            )
 
         print()
 
