@@ -15,6 +15,7 @@ import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from scanner_preflight import (
     ScannerPreflightResult,
@@ -30,6 +31,8 @@ RECORD_ORIGIN_DIRECT_SUBMISSION = "direct_submission"
 RECORD_ORIGIN_PLAN_PREVIEW = "plan_preview"
 RECORD_ORIGIN_PLAN_APPLICATION = "plan_application"
 RECORD_ORIGIN_WATCHLIST_CYCLE = "watchlist_cycle"
+ET_ZONE = ZoneInfo("America/New_York")
+
 
 VALID_RECORD_ORIGINS = frozenset({
     RECORD_ORIGIN_SCHWAB_MOVERS,
@@ -191,7 +194,12 @@ def save_watchlist_run_record(
         cycle_id
     )
 
-    now = created_at or datetime.now().astimezone()
+    now = created_at or datetime.now(ET_ZONE)
+
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=ET_ZONE)
+    else:
+        now = now.astimezone(ET_ZONE)
 
     resolved_output_dir = output_dir.expanduser().resolve()
     resolved_output_dir.mkdir(
