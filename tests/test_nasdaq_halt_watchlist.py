@@ -145,15 +145,29 @@ def test_submit_and_verify_live_success(
             events.append(
                 "check-suspended"
             )
-        else:
-            events.append(
-                "check-active"
+
+            return SimpleNamespace(
+                ready=True,
+                detail="ready",
+                status="HEALTHY",
+                loop_state="exports_suspended",
+                running=True,
+                paused=False,
+                exports_suspended=True,
             )
+
+        events.append(
+            "check-active"
+        )
 
         return SimpleNamespace(
             ready=True,
             detail="ready",
             status="HEALTHY",
+            loop_state="idle",
+            running=True,
+            paused=False,
+            exports_suspended=False,
         )
 
     monkeypatch.setattr(
@@ -327,14 +341,39 @@ def test_verification_failure_still_resumes_exports(
         lambda poll_time: target_filename,
     )
 
-    monkeypatch.setattr(
-        halt_wl,
-        "check_scanner_ready",
-        lambda **kwargs: SimpleNamespace(
+
+    def fake_check_scanner_ready(
+        *,
+        root=None,
+        allow_exports_suspended=False,
+    ):
+        del root
+
+        if allow_exports_suspended:
+            return SimpleNamespace(
+                ready=True,
+                detail="ready",
+                status="HEALTHY",
+                loop_state="exports_suspended",
+                running=True,
+                paused=False,
+                exports_suspended=True,
+            )
+
+        return SimpleNamespace(
             ready=True,
             detail="ready",
             status="HEALTHY",
-        ),
+            loop_state="idle",
+            running=True,
+            paused=False,
+            exports_suspended=False,
+        )
+
+    monkeypatch.setattr(
+        halt_wl,
+        "check_scanner_ready",
+        fake_check_scanner_ready,
     )
 
     def fake_control(
@@ -458,14 +497,40 @@ def test_add_failure_still_resumes_and_does_not_export(
         ),
     )
 
-    monkeypatch.setattr(
-        halt_wl,
-        "check_scanner_ready",
-        lambda **kwargs: SimpleNamespace(
+
+    def fake_check_scanner_ready(
+        *,
+        root=None,
+        allow_exports_suspended=False,
+    ):
+        del root
+
+        if allow_exports_suspended:
+            return SimpleNamespace(
+                ready=True,
+                detail="ready",
+                status="HEALTHY",
+                loop_state="exports_suspended",
+                running=True,
+                paused=False,
+                exports_suspended=True,
+            )
+
+        return SimpleNamespace(
             ready=True,
             detail="ready",
             status="HEALTHY",
-        ),
+            loop_state="idle",
+            running=True,
+            paused=False,
+            exports_suspended=False,
+        )
+
+
+    monkeypatch.setattr(
+        halt_wl,
+        "check_scanner_ready",
+        fake_check_scanner_ready,
     )
 
     def fake_control(
@@ -717,3 +782,133 @@ def test_current_mode_first_poll_establishes_baseline(
         "only; no Watchlist submission"
         in output
     )
+
+
+def test_wait_for_scanner_state_tolerates_busy_before_suspended(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    states = iter(
+        [
+            SimpleNamespace(
+                ready=False,
+                detail="scanner busy",
+                status="BUSY",
+                loop_state="busy",
+                running=True,
+                paused=False,
+                exports_suspended=False,
+            ),
+            SimpleNamespace(
+                ready=True,
+                detail="scanner idle",
+                status="HEALTHY",
+                loop_state="idle",
+                running=True,
+                paused=False,
+                exports_suspended=False,
+            ),
+            SimpleNamespace(
+                ready=True,
+                detail="exports suspended",
+                status="HEALTHY",
+                loop_state="exports_suspended",
+                running=True,
+                paused=False,
+                exports_suspended=True,
+            ),
+        ]
+    )
+
+    calls = 0
+
+    def fake_check_scanner_ready(
+        *,
+        root=None,
+        allow_exports_suspended=False,
+    ):
+        nonlocal calls
+
+        del root
+
+        assert (
+            allow_exports_suspended
+            is True
+        )
+
+        calls += 1
+        return next(states)
+
+    monkeypatch.setattr(
+        halt_wl,
+        "check_scanner_ready",
+        fake_check_scanner_ready,
+    )
+
+    monkeypatch.setattr(
+        halt_wl.time,
+        "sleep",
+        lambda seconds: None,
+    )
+
+    result = (
+        halt_wl.wait_for_scanner_state(
+            root=None,
+            expect_suspended=True,
+            timeout=5.0,
+        )
+    )
+
+    assert calls == 3
+
+    assert (
+        result.loop_state
+        == "exports_suspended"
+    )
+
+    assert (
+        result.exports_suspended
+        is True
+    )
+
+
+def test_wait_for_file_tolerates_delayed_arrival(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = (
+        tmp_path
+        / "delayed-verification.csv"
+    )
+
+    sleep_calls = 0
+
+    def fake_sleep(
+        seconds: float,
+    ) -> None:
+        nonlocal sleep_calls
+
+        del seconds
+
+        sleep_calls += 1
+
+        if sleep_calls == 2:
+            path.write_text(
+                "Symbol,Last\n"
+                "TEMC,10.00\n",
+                encoding="utf-8",
+            )
+
+    monkeypatch.setattr(
+        halt_wl.time,
+        "sleep",
+        fake_sleep,
+    )
+
+    result = halt_wl.wait_for_file(
+        path,
+        timeout=5.0,
+    )
+
+    assert result is True
+    assert path.exists()
+    assert sleep_calls == 2

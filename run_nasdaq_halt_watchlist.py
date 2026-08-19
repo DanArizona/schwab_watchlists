@@ -19,7 +19,10 @@ from mb_market_data.nasdaq_halt_monitor import NasdaqHaltMonitor
 from scanner_export_coordination import (
     run_scanner_control_command,
 )
-from scanner_preflight import check_scanner_ready
+from scanner_preflight import (
+    ScannerPreflightResult,
+    check_scanner_ready,
+)
 from watchlist_submission import (
     RECORD_ORIGIN_DIRECT_SUBMISSION,
     WatchlistSubmissionResult,
@@ -33,7 +36,9 @@ ET_ZONE = ZoneInfo("America/New_York")
 DEFAULT_POLL_SECONDS = 60
 DEFAULT_FETCH_TIMEOUT = 60.0
 DEFAULT_SCANNER_WAIT = 30.0
-DEFAULT_VERIFY_WAIT = 5.0
+DEFAULT_SCANNER_STATE_WAIT = 45.0
+DEFAULT_STATE_POLL_SECONDS = 0.25
+DEFAULT_VERIFY_WAIT = 45.0
 
 
 def now_et() -> datetime:
@@ -197,6 +202,67 @@ def wait_for_file(
     return path.exists() and path.is_file()
 
 
+def scanner_state_matches(
+    result: ScannerPreflightResult,
+    *,
+    expect_suspended: bool,
+) -> bool:
+    if expect_suspended:
+        return (
+            result.ready
+            and result.status == "HEALTHY"
+            and result.loop_state
+            == "exports_suspended"
+            and result.running
+            and not result.paused
+            and result.exports_suspended
+        )
+
+    return (
+        result.ready
+        and result.status == "HEALTHY"
+        and result.loop_state == "idle"
+        and result.running
+        and not result.paused
+        and not result.exports_suspended
+    )
+
+
+def wait_for_scanner_state(
+    *,
+    root: Path | None,
+    expect_suspended: bool,
+    timeout: float,
+) -> ScannerPreflightResult:
+    if timeout <= 0:
+        raise ValueError(
+            "Scanner state wait must be positive."
+        )
+
+    deadline = time.monotonic() + timeout
+
+    while True:
+        result = check_scanner_ready(
+            root=root,
+            allow_exports_suspended=(
+                expect_suspended
+            ),
+        )
+
+        if scanner_state_matches(
+            result,
+            expect_suspended=expect_suspended,
+        ):
+            return result
+
+        if time.monotonic() >= deadline:
+            return result
+
+        time.sleep(
+            DEFAULT_STATE_POLL_SECONDS
+        )
+
+
 def read_watchlist_symbols(
     path: Path,
 ) -> set[str]:
@@ -327,27 +393,48 @@ def submit_and_verify_live(
             )
 
         suspended_preflight = (
-            check_scanner_ready(
+            wait_for_scanner_state(
                 root=root,
-                allow_exports_suspended=True,
+                expect_suspended=True,
+                timeout=(
+                    DEFAULT_SCANNER_STATE_WAIT
+                ),
             )
         )
 
-        if not suspended_preflight.ready:
+        if not scanner_state_matches(
+            suspended_preflight,
+            expect_suspended=True,
+        ):
             raise RuntimeError(
                 "Scanner did not enter the "
-                "expected suspended-export state: "
+                "expected suspended-export state "
+                "within the allowed wait: "
                 f"{suspended_preflight.detail}"
             )
+
 
         def suspended_submission_preflight(
             *,
             root: Path | None,
-        ):
-            return check_scanner_ready(
+        ) -> ScannerPreflightResult:
+            result = check_scanner_ready(
                 root=root,
                 allow_exports_suspended=True,
             )
+
+            if not scanner_state_matches(
+                result,
+                expect_suspended=True,
+            ):
+                raise RuntimeError(
+                    "Scanner left the expected "
+                    "suspended-export state before "
+                    "Watchlist submission: "
+                    f"{result.detail}"
+                )
+
+            return result
 
         submission = submit_watchlist_symbols(
             mode="add",
@@ -446,16 +533,24 @@ def submit_and_verify_live(
                 )
 
             resumed_preflight = (
-                check_scanner_ready(
+                wait_for_scanner_state(
                     root=root,
+                    expect_suspended=False,
+                    timeout=(
+                        DEFAULT_SCANNER_STATE_WAIT
+                    ),
                 )
             )
 
-            if not resumed_preflight.ready:
+            if not scanner_state_matches(
+                resumed_preflight,
+                expect_suspended=False,
+            ):
                 raise RuntimeError(
                     "Scanner did not return to "
                     "the expected active-export "
-                    "state after resume_exports: "
+                    "state after resume_exports "
+                    "within the allowed wait: "
                     f"{resumed_preflight.detail}"
                 )
 
