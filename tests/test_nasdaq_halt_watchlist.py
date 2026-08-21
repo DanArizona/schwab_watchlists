@@ -382,6 +382,308 @@ def test_submit_and_verify_live_success(
     ]
 
 
+def test_resume_exports_retries_after_transient_command_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_actions: list[str] = []
+    resume_attempts = 0
+
+    monkeypatch.setattr(
+        halt_wl,
+        "DEFAULT_RESUME_EXPORTS_RETRY_SECONDS",
+        0.0,
+    )
+
+    monkeypatch.setattr(
+        halt_wl,
+        "build_verification_filename",
+        lambda poll_time: (
+            "resume-retry-WL.csv"
+        ),
+    )
+
+    def fake_check_scanner_ready(
+        *,
+        root=None,
+        allow_exports_suspended=False,
+    ):
+        del root
+
+        if allow_exports_suspended:
+            return SimpleNamespace(
+                ready=True,
+                detail="exports suspended",
+                status="HEALTHY",
+                loop_state="exports_suspended",
+                running=True,
+                paused=False,
+                exports_suspended=True,
+            )
+
+        return SimpleNamespace(
+            ready=True,
+            detail="exports active",
+            status="HEALTHY",
+            loop_state="idle",
+            running=True,
+            paused=False,
+            exports_suspended=False,
+        )
+
+    monkeypatch.setattr(
+        halt_wl,
+        "check_scanner_ready",
+        fake_check_scanner_ready,
+    )
+
+    def fake_control(
+        *,
+        action,
+        root,
+        wait,
+    ):
+        nonlocal resume_attempts
+
+        del root, wait
+
+        control_actions.append(action)
+
+        if action == "resume_exports":
+            resume_attempts += 1
+
+            if resume_attempts == 1:
+                return SimpleNamespace(
+                    successful=False,
+                    return_code=1,
+                )
+
+        return SimpleNamespace(
+            successful=True,
+            return_code=0,
+        )
+
+    monkeypatch.setattr(
+        halt_wl,
+        "run_scanner_control_command",
+        fake_control,
+    )
+
+    submission_result = SimpleNamespace(
+        submitted=True,
+        successful=True,
+        return_code=0,
+        run_record_path=(
+            tmp_path / "run.json"
+        ),
+    )
+
+    monkeypatch.setattr(
+        halt_wl,
+        "submit_watchlist_symbols",
+        lambda **kwargs: submission_result,
+    )
+
+    monkeypatch.setattr(
+        halt_wl,
+        "run_verification_export",
+        lambda **kwargs: (
+            ("mb-scan-command",),
+            0,
+        ),
+    )
+
+    monkeypatch.setattr(
+        halt_wl,
+        "wait_for_file",
+        lambda path, *, timeout: True,
+    )
+
+    monkeypatch.setattr(
+        halt_wl,
+        "read_watchlist_symbols",
+        lambda path: {"NVDA"},
+    )
+
+    poll_time = datetime(
+        2026,
+        8,
+        21,
+        14,
+        30,
+        tzinfo=halt_wl.ET_ZONE,
+    )
+
+    result, _ = halt_wl.submit_and_verify_live(
+        symbols=["NVDA"],
+        poll_time=poll_time,
+        wait=30.0,
+        root=None,
+        output_dir=(
+            tmp_path / "output"
+        ),
+        verification_dir=(
+            tmp_path / "watchlist_verify"
+        ),
+    )
+
+    assert result is submission_result
+
+    assert control_actions == [
+        "suspend_exports",
+        "resume_exports",
+        "resume_exports",
+    ]
+
+    assert resume_attempts == 2
+
+
+def test_resume_exports_retry_is_bounded_when_commands_keep_failing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_actions: list[str] = []
+
+    monkeypatch.setattr(
+        halt_wl,
+        "DEFAULT_RESUME_EXPORTS_ATTEMPTS",
+        3,
+    )
+
+    monkeypatch.setattr(
+        halt_wl,
+        "DEFAULT_RESUME_EXPORTS_RETRY_SECONDS",
+        0.0,
+    )
+
+    def fake_control(
+        *,
+        action,
+        root,
+        wait,
+    ):
+        del root, wait
+
+        control_actions.append(action)
+
+        assert action == "resume_exports"
+
+        return SimpleNamespace(
+            successful=False,
+            return_code=1,
+        )
+
+    monkeypatch.setattr(
+        halt_wl,
+        "run_scanner_control_command",
+        fake_control,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="may remain suspended",
+    ):
+        halt_wl.resume_exports_with_retry(
+            root=None,
+            wait=30.0,
+        )
+
+    assert control_actions == [
+        "resume_exports",
+        "resume_exports",
+        "resume_exports",
+    ]
+
+
+def test_resume_exports_retries_when_state_does_not_restore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_actions: list[str] = []
+    state_checks = 0
+
+    monkeypatch.setattr(
+        halt_wl,
+        "DEFAULT_RESUME_EXPORTS_RETRY_SECONDS",
+        0.0,
+    )
+
+    def fake_control(
+        *,
+        action,
+        root,
+        wait,
+    ):
+        del root, wait
+
+        control_actions.append(action)
+
+        assert action == "resume_exports"
+
+        return SimpleNamespace(
+            successful=True,
+            return_code=0,
+        )
+
+    monkeypatch.setattr(
+        halt_wl,
+        "run_scanner_control_command",
+        fake_control,
+    )
+
+    def fake_wait_for_scanner_state(
+        *,
+        root,
+        expect_suspended,
+        timeout,
+    ):
+        nonlocal state_checks
+
+        del root, timeout
+
+        assert expect_suspended is False
+
+        state_checks += 1
+
+        if state_checks == 1:
+            return SimpleNamespace(
+                ready=True,
+                detail="still suspended",
+                status="HEALTHY",
+                loop_state="exports_suspended",
+                running=True,
+                paused=False,
+                exports_suspended=True,
+            )
+
+        return SimpleNamespace(
+            ready=True,
+            detail="exports active",
+            status="HEALTHY",
+            loop_state="idle",
+            running=True,
+            paused=False,
+            exports_suspended=False,
+        )
+
+    monkeypatch.setattr(
+        halt_wl,
+        "wait_for_scanner_state",
+        fake_wait_for_scanner_state,
+    )
+
+    result = halt_wl.resume_exports_with_retry(
+        root=None,
+        wait=30.0,
+    )
+
+    assert result.loop_state == "idle"
+    assert state_checks == 2
+
+    assert control_actions == [
+        "resume_exports",
+        "resume_exports",
+    ]
+
+
 def test_verification_failure_still_resumes_exports(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
