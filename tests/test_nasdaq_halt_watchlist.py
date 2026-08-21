@@ -91,6 +91,67 @@ def test_read_watchlist_symbols_handles_tos_preamble(
     }
 
 
+def test_read_watchlist_symbols_retries_transient_permission_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "watchlist.csv"
+
+    path.write_text(
+        "Watchlist 'default'\n"
+        "\n"
+        "default\n"
+        "Symbol,Last\n"
+        "NVDA,220\n"
+        "TSLA,330\n",
+        encoding="utf-8",
+    )
+
+    original_open = Path.open
+    open_attempts = 0
+
+    def flaky_open(
+        self: Path,
+        *args,
+        **kwargs,
+    ):
+        nonlocal open_attempts
+
+        if self == path:
+            open_attempts += 1
+
+            if open_attempts == 1:
+                raise PermissionError(
+                    "verification file is temporarily locked"
+                )
+
+        return original_open(
+            self,
+            *args,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(
+        Path,
+        "open",
+        flaky_open,
+    )
+
+    symbols = (
+        halt_wl.read_watchlist_symbols(
+            path,
+            open_timeout_s=1.0,
+            retry_interval_s=0.0,
+        )
+    )
+
+    assert open_attempts == 2
+    assert symbols == {
+        "NVDA",
+        "TSLA",
+    }
+
+
 def test_read_watchlist_symbols_requires_symbol_header(
     tmp_path: Path,
 ) -> None:

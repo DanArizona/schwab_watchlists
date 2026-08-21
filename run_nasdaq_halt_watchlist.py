@@ -265,39 +265,59 @@ def wait_for_scanner_state(
 
 def read_watchlist_symbols(
     path: Path,
+    *,
+    open_timeout_s: float = 10.0,
+    retry_interval_s: float = 0.25,
 ) -> set[str]:
     """
     Read symbols from a ThinkOrSwim Watchlist export.
 
     The ToS file contains preamble rows before the CSV header,
     so locate the row whose first column is 'Symbol'.
+
+    A verification CSV copied from El-Cheapo may become visible
+    on MasterBot slightly before the writer releases the file.
+    Retry transient PermissionError failures rather than treating
+    the first locked-file access as a transaction failure.
     """
+    deadline = time.monotonic() + open_timeout_s
+
+    while True:
+        try:
+            with path.open(
+                "r",
+                encoding="utf-8-sig",
+                newline="",
+            ) as input_file:
+                rows = list(csv.reader(input_file))
+
+            break
+
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+
+            time.sleep(retry_interval_s)
+
     symbols: set[str] = set()
     header_found = False
 
-    with path.open(
-        "r",
-        encoding="utf-8-sig",
-        newline="",
-    ) as input_file:
-        reader = csv.reader(input_file)
+    for row in rows:
+        if not row:
+            continue
 
-        for row in reader:
-            if not row:
-                continue
+        first_column = row[0].strip()
 
-            first_column = row[0].strip()
+        if not header_found:
+            if first_column == "Symbol":
+                header_found = True
 
-            if not header_found:
-                if first_column == "Symbol":
-                    header_found = True
+            continue
 
-                continue
-
-            if first_column:
-                symbols.add(
-                    first_column.upper()
-                )
+        if first_column:
+            symbols.add(
+                first_column.upper()
+            )
 
     if not header_found:
         raise RuntimeError(
