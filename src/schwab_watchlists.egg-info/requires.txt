@@ -1,4 +1,0 @@
-mb-watchlist-coordinator>=0.1.0.dev0
-
-[test]
-pytest>=8

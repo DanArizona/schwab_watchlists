@@ -12,3 +12,6 @@ output/*
 
 .vscode/settings.json
 .pytest_cache/
+
+# Python package build metadata
+*.egg-info/
