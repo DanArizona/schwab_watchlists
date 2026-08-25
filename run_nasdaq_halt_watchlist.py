@@ -29,6 +29,12 @@ from watchlist_submission import (
     build_watchlist_command,
     submit_watchlist_symbols,
 )
+from schwab_watchlists.tos_watchlist_transport import (
+    build_watchlist_export_command,
+    read_watchlist_symbols as _read_watchlist_symbols,
+    scanner_state_matches as _scanner_state_matches,
+    wait_for_file as _wait_for_file,
+)
 
 
 ET_ZONE = ZoneInfo("America/New_York")
@@ -118,37 +124,23 @@ def build_verification_export_command(
     wait: float,
     executable: str,
 ) -> tuple[str, ...]:
+    """
+    Backward-compatible Nasdaq verification wrapper around the
+    generic Watchlist export command builder.
+    """
+
     if wait <= 0:
         raise ValueError(
             "Verification export requires "
             "a positive scanner wait."
         )
 
-    command = [
-        executable,
-        "export_wl",
-        "--target-filename",
-        target_filename,
-    ]
-
-    if root is not None:
-        command.extend(
-            [
-                "--root",
-                str(
-                    root.expanduser().resolve()
-                ),
-            ]
-        )
-
-    command.extend(
-        [
-            "--wait",
-            str(wait),
-        ]
+    return build_watchlist_export_command(
+        target_filename=target_filename,
+        root=root,
+        wait=wait,
+        executable=executable,
     )
-
-    return tuple(command)
 
 
 def run_verification_export(
@@ -193,15 +185,12 @@ def wait_for_file(
     *,
     timeout: float,
 ) -> bool:
-    deadline = time.monotonic() + timeout
-
-    while time.monotonic() < deadline:
-        if path.exists() and path.is_file():
-            return True
-
-        time.sleep(0.25)
-
-    return path.exists() and path.is_file()
+    return _wait_for_file(
+        path,
+        timeout=timeout,
+        monotonic=time.monotonic,
+        sleep=time.sleep,
+    )
 
 
 def scanner_state_matches(
@@ -209,24 +198,9 @@ def scanner_state_matches(
     *,
     expect_suspended: bool,
 ) -> bool:
-    if expect_suspended:
-        return (
-            result.ready
-            and result.status == "HEALTHY"
-            and result.loop_state
-            == "exports_suspended"
-            and result.running
-            and not result.paused
-            and result.exports_suspended
-        )
-
-    return (
-        result.ready
-        and result.status == "HEALTHY"
-        and result.loop_state == "idle"
-        and result.running
-        and not result.paused
-        and not result.exports_suspended
+    return _scanner_state_matches(
+        result,
+        expect_suspended=expect_suspended,
     )
 
 
@@ -347,63 +321,13 @@ def read_watchlist_symbols(
     open_timeout_s: float = 10.0,
     retry_interval_s: float = 0.25,
 ) -> set[str]:
-    """
-    Read symbols from a ThinkOrSwim Watchlist export.
-
-    The ToS file contains preamble rows before the CSV header,
-    so locate the row whose first column is 'Symbol'.
-
-    A verification CSV copied from El-Cheapo may become visible
-    on MasterBot slightly before the writer releases the file.
-    Retry transient PermissionError failures rather than treating
-    the first locked-file access as a transaction failure.
-    """
-    deadline = time.monotonic() + open_timeout_s
-
-    while True:
-        try:
-            with path.open(
-                "r",
-                encoding="utf-8-sig",
-                newline="",
-            ) as input_file:
-                rows = list(csv.reader(input_file))
-
-            break
-
-        except PermissionError:
-            if time.monotonic() >= deadline:
-                raise
-
-            time.sleep(retry_interval_s)
-
-    symbols: set[str] = set()
-    header_found = False
-
-    for row in rows:
-        if not row:
-            continue
-
-        first_column = row[0].strip()
-
-        if not header_found:
-            if first_column == "Symbol":
-                header_found = True
-
-            continue
-
-        if first_column:
-            symbols.add(
-                first_column.upper()
-            )
-
-    if not header_found:
-        raise RuntimeError(
-            "Watchlist verification CSV does not "
-            f"contain a Symbol header: {path}"
-        )
-
-    return symbols
+    return _read_watchlist_symbols(
+        path,
+        open_timeout_s=open_timeout_s,
+        retry_interval_s=retry_interval_s,
+        monotonic=time.monotonic,
+        sleep=time.sleep,
+    )
 
 
 def submit_and_verify_live(
