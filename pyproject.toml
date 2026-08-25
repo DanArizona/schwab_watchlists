@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "schwab-watchlists"
+version = "0.1.0.dev0"
+description = "MasterBot Watchlist generation and ThinkOrSwim integration"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "mb-watchlist-coordinator>=0.1.0.dev0",
+]
+
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+]
+
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# The existing application still consists primarily of top-level modules.
+# Preserve those imports during the staged migration to src/schwab_watchlists.
+pythonpath = ["."]
