@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import csv
 import time
+import shutil
+import subprocess
+
 from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class ScannerStateLike(Protocol):
@@ -16,6 +19,11 @@ class ScannerStateLike(Protocol):
     running: bool
     paused: bool
     exports_suspended: bool
+
+
+class ScannerControlResultLike(Protocol):
+    successful: bool
+    return_code: int
 
 
 def build_watchlist_export_command(
@@ -55,6 +63,56 @@ def build_watchlist_export_command(
     )
 
     return tuple(command)
+
+
+def run_watchlist_export(
+    *,
+    target_filename: str,
+    root: Path | None,
+    wait: float,
+    command_builder: Callable[
+        ...,
+        tuple[str, ...],
+    ] = build_watchlist_export_command,
+    executable_finder: Callable[
+        [str],
+        str | None,
+    ] = shutil.which,
+    runner: Callable[..., Any] = subprocess.run,
+) -> tuple[tuple[str, ...], int]:
+    """
+    Run one explicit ThinkOrSwim Watchlist export command.
+    """
+
+    executable = executable_finder(
+        "mb-scan-command"
+    )
+
+    if executable is None:
+        raise RuntimeError(
+            "mb-scan-command was not found on PATH."
+        )
+
+    command = command_builder(
+        target_filename=target_filename,
+        root=root,
+        wait=wait,
+        executable=executable,
+    )
+
+    try:
+        completed = runner(
+            list(command),
+            check=False,
+            text=True,
+        )
+
+    except OSError as exc:
+        raise RuntimeError(
+            f"Could not run mb-scan-command: {exc}"
+        ) from exc
+
+    return command, completed.returncode
 
 
 def wait_for_file(
@@ -101,6 +159,126 @@ def scanner_state_matches(
         and result.running
         and not result.paused
         and not result.exports_suspended
+    )
+
+
+def wait_for_scanner_state(
+    *,
+    root: Path | None,
+    expect_suspended: bool,
+    timeout: float,
+    preflight_checker: Callable[
+        ...,
+        ScannerStateLike,
+    ],
+    state_matcher: Callable[..., bool] = scanner_state_matches,
+    state_poll_seconds: float,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> ScannerStateLike:
+    """
+    Wait until scanner state matches the requested export state.
+    """
+
+    if timeout <= 0:
+        raise ValueError(
+            "Scanner state wait must be positive."
+        )
+
+    deadline = monotonic() + timeout
+
+    while True:
+        result = preflight_checker(
+            root=root,
+            allow_exports_suspended=(
+                expect_suspended
+            ),
+        )
+
+        if state_matcher(
+            result,
+            expect_suspended=expect_suspended,
+        ):
+            return result
+
+        if monotonic() >= deadline:
+            return result
+
+        sleep(state_poll_seconds)
+
+
+def resume_exports_with_retry(
+    *,
+    root: Path | None,
+    wait: float,
+    control_executor: Callable[
+        ...,
+        ScannerControlResultLike,
+    ],
+    state_waiter: Callable[
+        ...,
+        ScannerStateLike,
+    ],
+    state_matcher: Callable[..., bool] = scanner_state_matches,
+    attempts: int,
+    retry_seconds: float,
+    sleep: Callable[[float], None] = time.sleep,
+) -> ScannerStateLike:
+    """
+    Restore scheduled exports after a protected Watchlist operation.
+    """
+
+    last_return_code: int | None = None
+    last_preflight: ScannerStateLike | None = None
+
+    for attempt in range(
+        1,
+        attempts + 1,
+    ):
+        resume_result = control_executor(
+            action="resume_exports",
+            root=root,
+            wait=wait,
+        )
+
+        last_return_code = (
+            resume_result.return_code
+        )
+
+        if resume_result.successful:
+            resumed_preflight = state_waiter(
+                root=root,
+                expect_suspended=False,
+            )
+
+            last_preflight = resumed_preflight
+
+            if state_matcher(
+                resumed_preflight,
+                expect_suspended=False,
+            ):
+                return resumed_preflight
+
+        if attempt < attempts:
+            sleep(retry_seconds)
+
+    detail = (
+        getattr(
+            last_preflight,
+            "detail",
+            "active scanner state was not observed",
+        )
+        if last_preflight is not None
+        else "active scanner state was not observed"
+    )
+
+    raise RuntimeError(
+        "Scanner exports may remain suspended "
+        "after "
+        f"{attempts} "
+        "resume_exports attempt(s); "
+        f"last exit code={last_return_code}; "
+        f"last state: {detail}"
     )
 
 
