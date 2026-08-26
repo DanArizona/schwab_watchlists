@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -31,6 +32,7 @@ from .tos_watchlist_transport import (
     wait_for_scanner_state,
 )
 
+EASTERN = ZoneInfo("America/New_York")
 
 @dataclass(slots=True)
 class LiveToSExecutor:
@@ -149,7 +151,7 @@ class LiveToSExecutor:
             observed_state = AdapterObservedState(
                 adapter_id="tos",
                 symbols=frozenset(symbols),
-                observed_at=datetime.now().astimezone(),
+                observed_at=datetime.now(EASTERN),
                 evidence_ref=str(verification_path),
             )
 
@@ -167,7 +169,7 @@ class LiveToSExecutor:
                                     AdapterHealthStatus.DEGRADED
                                 ),
                                 observed_at=(
-                                    datetime.now().astimezone()
+                                    datetime.now(EASTERN)
                                 ),
                                 reason=str(exc),
                                 evidence_ref=str(
@@ -185,7 +187,7 @@ class LiveToSExecutor:
             health_state=AdapterHealthState(
                 adapter_id="tos",
                 status=AdapterHealthStatus.HEALTHY,
-                observed_at=datetime.now().astimezone(),
+                observed_at=datetime.now(EASTERN),
                 evidence_ref=str(verification_path),
             ),
         )
