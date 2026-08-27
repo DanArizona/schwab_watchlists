@@ -135,6 +135,72 @@ def wait_for_file(
     return path.exists() and path.is_file()
 
 
+def transport_staged_file(
+    source: Path,
+    destination: Path,
+    *,
+    attempts: int,
+    retry_seconds: float,
+    copier: Callable[[Path, Path], Any] = shutil.copy2,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Path:
+    """
+    Copy one staged verification file to its final MasterBot location.
+
+    The destination becomes visible under its final .csv name only after
+    the copy completes successfully. Transport retries never involve ToS.
+    """
+
+    if attempts <= 0:
+        raise ValueError(
+            "Transport attempts must be positive."
+        )
+
+    if retry_seconds < 0:
+        raise ValueError(
+            "Transport retry delay cannot be negative."
+        )
+
+    destination.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    temp_path = destination.with_name(
+        destination.name + ".tmp"
+    )
+
+    last_error: OSError | None = None
+
+    for attempt in range(
+        1,
+        attempts + 1,
+    ):
+        try:
+            copier(
+                source,
+                temp_path,
+            )
+
+            temp_path.replace(
+                destination
+            )
+
+            return destination
+
+        except OSError as exc:
+            last_error = exc
+
+            if attempt < attempts:
+                sleep(retry_seconds)
+
+    raise RuntimeError(
+        "Could not transport staged Watchlist evidence "
+        f"after {attempts} attempt(s): "
+        f"{source} -> {destination}: {last_error}"
+    ) from last_error
+
+
 def scanner_state_matches(
     result: ScannerStateLike,
     *,

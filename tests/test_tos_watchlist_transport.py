@@ -5,6 +5,7 @@ from schwab_watchlists.tos_watchlist_transport import (
     build_watchlist_export_command,
     read_watchlist_symbols,
     scanner_state_matches,
+    transport_staged_file,
     wait_for_file,
     resume_exports_with_retry,
     run_watchlist_export,
@@ -98,6 +99,119 @@ def test_wait_for_file_returns_true_for_existing_file(
         path,
         timeout=1.0,
     )
+
+
+def test_transport_staged_file_uses_atomic_final_name(
+    tmp_path,
+):
+    source = (
+        tmp_path
+        / "outbox"
+        / "verify-WL.csv"
+    )
+
+    destination = (
+        tmp_path
+        / "masterbot"
+        / "watchlist_verify"
+        / "verify-WL.csv"
+    )
+
+    source.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    source.write_text(
+        "Symbol\nNVDA\n",
+        encoding="utf-8",
+    )
+
+    result = transport_staged_file(
+        source,
+        destination,
+        attempts=3,
+        retry_seconds=0.0,
+    )
+
+    temp_path = destination.with_name(
+        destination.name + ".tmp"
+    )
+
+    assert result == destination
+    assert destination.exists()
+    assert not temp_path.exists()
+
+    assert destination.read_text(
+        encoding="utf-8"
+    ) == source.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_transport_staged_file_retries_copy_without_tos(
+    tmp_path,
+):
+    source = (
+        tmp_path
+        / "outbox"
+        / "verify-WL.csv"
+    )
+
+    destination = (
+        tmp_path
+        / "masterbot"
+        / "watchlist_verify"
+        / "verify-WL.csv"
+    )
+
+    source.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    source.write_text(
+        "Symbol\nNVDA\n",
+        encoding="utf-8",
+    )
+
+    copy_calls = []
+    sleep_calls = []
+
+    def flaky_copier(
+        copy_source: Path,
+        copy_destination: Path,
+    ):
+        copy_calls.append(
+            (
+                copy_source,
+                copy_destination,
+            )
+        )
+
+        if len(copy_calls) == 1:
+            raise OSError(
+                "simulated transport failure"
+            )
+
+        copy_destination.write_bytes(
+            copy_source.read_bytes()
+        )
+
+    result = transport_staged_file(
+        source,
+        destination,
+        attempts=3,
+        retry_seconds=0.5,
+        copier=flaky_copier,
+        sleep=sleep_calls.append,
+    )
+
+    assert result == destination
+    assert destination.exists()
+
+    assert len(copy_calls) == 2
+    assert sleep_calls == [0.5]
 
 
 def test_run_watchlist_export_uses_injected_command_builder(
