@@ -11,10 +11,6 @@ from uuid import uuid4
 from mb_watchlist_coordinator.adapter_state import (
     AdapterObservedState,
 )
-# from mb_watchlist_coordinator.execution import (
-#     AdapterObservationResult,
-#     MaterializationExecutionResult,
-# )
 from mb_watchlist_coordinator.execution import (
     AdapterObservationResult,
     MaterializationExecutionResult,
@@ -24,9 +20,6 @@ from mb_watchlist_coordinator.health import (
     AdapterHealthState,
     AdapterHealthStatus,
 )
-# from mb_watchlist_coordinator.transactions import (
-#     MaterializationTransaction,
-# )
 from mb_watchlist_coordinator.transactions import (
     MaterializationTransaction,
     MaterializationTransactionStatus,
@@ -57,6 +50,7 @@ class LiveToSExecutor:
     scanner_state_wait: float = 10.0
     state_poll_seconds: float = 0.25
     verify_wait: float = 45.0
+    verify_attempts: int = 2
     resume_attempts: int = 3
     resume_retry_seconds: float = 1.0
 
@@ -203,13 +197,6 @@ class LiveToSExecutor:
             ),
         )
 
-    # def materialize(
-    #     self,
-    #     transaction: MaterializationTransaction,
-    # ) -> MaterializationExecutionResult:
-    #     raise NotImplementedError(
-    #         "Live ToS materialization is the next integration step."
-    #     )
     def materialize(
         self,
         transaction: MaterializationTransaction,
@@ -504,47 +491,92 @@ class LiveToSExecutor:
                                             ),
                                         )
                                     )
-
                                 else:
-                                    try:
-                                        (
-                                            _,
-                                            export_return_code,
-                                        ) = run_watchlist_export(
-                                            target_filename=(
-                                                target_filename
-                                            ),
-                                            root=self.root,
-                                            wait=self.wait,
-                                        )
+                                    observed = None
+                                    verification_error = None
 
-                                        if export_return_code != 0:
-                                            raise RuntimeError(
-                                                "export_wl was not "
-                                                "reported as "
-                                                "successful; "
-                                                f"exit code="
-                                                f"{export_return_code}."
+                                    for verification_attempt in range(
+                                        1,
+                                        self.verify_attempts + 1,
+                                    ):
+                                        if verification_attempt > 1:
+                                            target_filename = (
+                                                self._build_materialization_filename()
                                             )
 
-                                        if not wait_for_file(
-                                            verification_path,
-                                            timeout=self.verify_wait,
-                                        ):
-                                            raise RuntimeError(
-                                                "Watchlist "
-                                                "materialization CSV "
-                                                "did not appear: "
-                                                f"{verification_path}"
+                                            verification_path = (
+                                                self.verification_dir
+                                                / target_filename
                                             )
 
-                                        symbols = (
-                                            read_watchlist_symbols(
-                                                verification_path
+                                        try:
+                                            (
+                                                _,
+                                                export_return_code,
+                                            ) = run_watchlist_export(
+                                                target_filename=(
+                                                    target_filename
+                                                ),
+                                                root=self.root,
+                                                wait=self.wait,
                                             )
-                                        )
 
-                                    except Exception as exc:
+                                            if export_return_code != 0:
+                                                raise RuntimeError(
+                                                    "export_wl was not "
+                                                    "reported as "
+                                                    "successful; "
+                                                    f"exit code="
+                                                    f"{export_return_code}."
+                                                )
+
+                                            if not wait_for_file(
+                                                verification_path,
+                                                timeout=self.verify_wait,
+                                            ):
+                                                raise RuntimeError(
+                                                    "Watchlist "
+                                                    "materialization CSV "
+                                                    "did not appear: "
+                                                    f"{verification_path}"
+                                                )
+
+                                            symbols = (
+                                                read_watchlist_symbols(
+                                                    verification_path
+                                                )
+                                            )
+
+                                        except Exception as exc:
+                                            verification_error = exc
+
+                                            if (
+                                                verification_attempt
+                                                < self.verify_attempts
+                                            ):
+                                                continue
+
+                                        else:
+                                            observed = (
+                                                AdapterObservedState(
+                                                    adapter_id="tos",
+                                                    symbols=frozenset(
+                                                        symbols
+                                                    ),
+                                                    observed_at=(
+                                                        datetime.now(
+                                                            EASTERN
+                                                        )
+                                                    ),
+                                                    evidence_ref=str(
+                                                        verification_path
+                                                    ),
+                                                )
+                                            )
+
+                                            break
+
+                                    if observed is None:
                                         execution_result = (
                                             MaterializationExecutionResult(
                                                 transaction_id=(
@@ -561,30 +593,18 @@ class LiveToSExecutor:
                                                     "successful, but "
                                                     "a trustworthy "
                                                     "observation could "
-                                                    "not be obtained: "
-                                                    f"{exc}"
+                                                    "not be obtained "
+                                                    f"after "
+                                                    f"{self.verify_attempts} "
+                                                    "verification "
+                                                    "attempts; "
+                                                    "last error: "
+                                                    f"{verification_error}"
                                                 ),
                                             )
                                         )
 
                                     else:
-                                        observed = (
-                                            AdapterObservedState(
-                                                adapter_id="tos",
-                                                symbols=frozenset(
-                                                    symbols
-                                                ),
-                                                observed_at=(
-                                                    datetime.now(
-                                                        EASTERN
-                                                    )
-                                                ),
-                                                evidence_ref=str(
-                                                    verification_path
-                                                ),
-                                            )
-                                        )
-
                                         execution_result = (
                                             MaterializationExecutionResult(
                                                 transaction_id=(
@@ -649,26 +669,6 @@ class LiveToSExecutor:
             reason=execution_result.reason,
             health_state=health,
         )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
     def _resume_exports(self) -> Any:

@@ -502,6 +502,113 @@ def test_export_failure_after_mutation_is_outcome_unknown(
     )
 
 
+def test_materialize_retries_verification_export_without_repeating_mutation(
+    tmp_path,
+    monkeypatch,
+):
+    states = [
+        make_scanner_state(suspended=False),
+        make_scanner_state(suspended=True),
+        make_scanner_state(suspended=False),
+    ]
+
+    export_filenames = []
+
+    def fake_export(**kwargs):
+        export_filenames.append(
+            kwargs["target_filename"]
+        )
+
+        return (
+            ("mb-scan-command", "export_wl"),
+            0,
+        )
+
+    file_results = iter(
+        [
+            False,
+            True,
+        ]
+    )
+
+    monkeypatch.setattr(
+        executor_module,
+        "run_watchlist_export",
+        fake_export,
+    )
+
+    monkeypatch.setattr(
+        executor_module,
+        "wait_for_file",
+        lambda path, timeout: next(file_results),
+    )
+
+    monkeypatch.setattr(
+        executor_module,
+        "read_watchlist_symbols",
+        lambda path: {
+            "AAPL",
+            "TEMC",
+        },
+    )
+
+    submit_calls = []
+
+    def submitter(**kwargs):
+        submit_calls.append(kwargs)
+
+        return SimpleNamespace(
+            submitted=True,
+            successful=True,
+            return_code=0,
+        )
+
+    executor = LiveToSExecutor(
+        root=None,
+        verification_dir=tmp_path / "verify",
+        wait=30.0,
+        preflight_checker=lambda **kwargs: states.pop(0),
+        control_executor=lambda **kwargs: SimpleNamespace(
+            successful=True,
+            return_code=0,
+        ),
+        output_dir=tmp_path / "output",
+        submitter=submitter,
+    )
+
+    transaction = make_active_transaction(
+        operation="ADD",
+        operation_symbols={"TEMC"},
+        target_symbols={"AAPL", "TEMC"},
+    )
+
+    result = executor.materialize(transaction)
+
+    assert result.status is (
+        MaterializationExecutionStatus.OBSERVED
+    )
+
+    assert result.observed_state is not None
+    assert result.observed_state.symbols == frozenset(
+        {
+            "AAPL",
+            "TEMC",
+        }
+    )
+
+    # Mutation happens exactly once.
+    assert len(submit_calls) == 1
+
+    # Observation is retried.
+    assert len(export_filenames) == 2
+
+    # Each attempt gets independent evidence.
+    assert (
+        export_filenames[0]
+        != export_filenames[1]
+    )
+
+
 def test_materialize_keeps_observation_when_resume_fails(
     tmp_path,
     monkeypatch,
