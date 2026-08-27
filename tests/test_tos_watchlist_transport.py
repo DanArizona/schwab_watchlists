@@ -136,19 +136,214 @@ def test_transport_staged_file_uses_atomic_final_name(
         retry_seconds=0.0,
     )
 
-    temp_path = destination.with_name(
-        destination.name + ".tmp"
-    )
-
     assert result == destination
     assert destination.exists()
-    assert not temp_path.exists()
+
+    assert list(
+        destination.parent.glob(
+            destination.name + ".tmp.*"
+        )
+    ) == []
 
     assert destination.read_text(
         encoding="utf-8"
     ) == source.read_text(
         encoding="utf-8"
     )
+
+
+def test_transport_staged_file_accepts_already_delivered_identical_file(
+    tmp_path,
+):
+    source = (
+        tmp_path
+        / "outbox"
+        / "verify-WL.csv"
+    )
+
+    destination = (
+        tmp_path
+        / "masterbot"
+        / "watchlist_verify"
+        / "verify-WL.csv"
+    )
+
+    source.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    destination.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    source.write_text(
+        "Symbol\nNVDA\n",
+        encoding="utf-8",
+    )
+
+    destination.write_bytes(
+        source.read_bytes()
+    )
+
+    copy_calls = []
+
+    def should_not_copy(
+        copy_source: Path,
+        copy_destination: Path,
+    ):
+        copy_calls.append(
+            (
+                copy_source,
+                copy_destination,
+            )
+        )
+
+        raise AssertionError(
+            "Identical evidence should not be copied again."
+        )
+
+    result = transport_staged_file(
+        source,
+        destination,
+        attempts=1,
+        retry_seconds=0.0,
+        copier=should_not_copy,
+    )
+
+    assert result == destination
+    assert copy_calls == []
+
+
+def test_transport_staged_file_handles_concurrent_identical_delivery(
+    tmp_path,
+):
+    source = (
+        tmp_path
+        / "outbox"
+        / "verify-WL.csv"
+    )
+
+    destination = (
+        tmp_path
+        / "masterbot"
+        / "watchlist_verify"
+        / "verify-WL.csv"
+    )
+
+    source.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    source.write_text(
+        "Symbol\nNVDA\n",
+        encoding="utf-8",
+    )
+
+    concurrent_delivery_done = False
+
+    def racing_copier(
+        copy_source: Path,
+        copy_destination: Path,
+    ):
+        nonlocal concurrent_delivery_done
+
+        copy_destination.write_bytes(
+            copy_source.read_bytes()
+        )
+
+        if not concurrent_delivery_done:
+            concurrent_delivery_done = True
+
+            #
+            # Simulate mb-wl-recovery completing delivery while
+            # the executor still has its own copy in progress.
+            #
+            transport_staged_file(
+                source,
+                destination,
+                attempts=1,
+                retry_seconds=0.0,
+            )
+
+    result = transport_staged_file(
+        source,
+        destination,
+        attempts=1,
+        retry_seconds=0.0,
+        copier=racing_copier,
+    )
+
+    assert result == destination
+
+    assert destination.read_bytes() == (
+        source.read_bytes()
+    )
+
+    assert list(
+        destination.parent.glob(
+            destination.name + ".tmp.*"
+        )
+    ) == []
+
+
+def test_transport_staged_file_rejects_conflicting_destination(
+    tmp_path,
+):
+    source = (
+        tmp_path
+        / "outbox"
+        / "verify-WL.csv"
+    )
+
+    destination = (
+        tmp_path
+        / "masterbot"
+        / "watchlist_verify"
+        / "verify-WL.csv"
+    )
+
+    source.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    destination.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    source.write_text(
+        "Symbol\nNVDA\n",
+        encoding="utf-8",
+    )
+
+    destination.write_text(
+        "Symbol\nAAPL\n",
+        encoding="utf-8",
+    )
+
+    import pytest
+
+    with pytest.raises(
+        RuntimeError,
+        match="different contents",
+    ):
+        transport_staged_file(
+            source,
+            destination,
+            attempts=1,
+            retry_seconds=0.0,
+        )
+
+    #
+    # Never overwrite conflicting evidence.
+    #
+    assert destination.read_text(
+        encoding="utf-8"
+    ) == "Symbol\nAAPL\n"
 
 
 def test_transport_staged_file_retries_copy_without_tos(

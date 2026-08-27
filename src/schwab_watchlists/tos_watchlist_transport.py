@@ -7,6 +7,8 @@ import time
 import shutil
 import subprocess
 
+from uuid import uuid4
+
 from dataclasses import dataclass
 from collections.abc import Callable
 from pathlib import Path
@@ -159,8 +161,14 @@ def transport_staged_file(
     """
     Copy one staged verification file to its final MasterBot location.
 
-    The destination becomes visible under its final .csv name only after
-    the copy completes successfully. Transport retries never involve ToS.
+    Multiple callers may safely attempt delivery of the same staged
+    evidence concurrently.
+
+    - each caller uses its own temporary file
+    - an identical destination already present counts as success
+    - a conflicting destination is never overwritten
+    - the final .csv name appears only after a complete copy
+    - retries never involve ThinkOrSwim
     """
 
     if attempts <= 0:
@@ -173,14 +181,33 @@ def transport_staged_file(
             "Transport retry delay cannot be negative."
         )
 
+    source = Path(source)
+    destination = Path(destination)
+
     destination.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
     temp_path = destination.with_name(
-        destination.name + ".tmp"
+        destination.name
+        + ".tmp."
+        + uuid4().hex
     )
+
+    def destination_matches_source() -> bool:
+        return (
+            source.read_bytes()
+            == destination.read_bytes()
+        )
+
+    def remove_temp() -> None:
+        try:
+            temp_path.unlink(
+                missing_ok=True
+            )
+        except OSError:
+            pass
 
     last_error: OSError | None = None
 
@@ -189,10 +216,44 @@ def transport_staged_file(
         attempts + 1,
     ):
         try:
+            #
+            # The recovery worker may already have delivered this
+            # evidence before this caller reaches the transport step.
+            #
+            if destination.exists():
+                if destination_matches_source():
+                    remove_temp()
+                    return destination
+
+                remove_temp()
+
+                raise RuntimeError(
+                    "Watchlist evidence destination already "
+                    "exists with different contents: "
+                    f"{destination}"
+                )
+
             copier(
                 source,
                 temp_path,
             )
+
+            #
+            # Another process may have completed delivery while this
+            # caller was copying into its private temporary file.
+            #
+            if destination.exists():
+                if destination_matches_source():
+                    remove_temp()
+                    return destination
+
+                remove_temp()
+
+                raise RuntimeError(
+                    "Watchlist evidence destination appeared "
+                    "with different contents during transport: "
+                    f"{destination}"
+                )
 
             temp_path.replace(
                 destination
@@ -200,17 +261,92 @@ def transport_staged_file(
 
             return destination
 
+        except RuntimeError:
+            remove_temp()
+            raise
+
         except OSError as exc:
             last_error = exc
 
+            remove_temp()
+
             if attempt < attempts:
-                sleep(retry_seconds)
+                sleep(
+                    retry_seconds
+                )
+
+    remove_temp()
 
     raise RuntimeError(
         "Could not transport staged Watchlist evidence "
         f"after {attempts} attempt(s): "
         f"{source} -> {destination}: {last_error}"
     ) from last_error
+
+
+#     source: Path,
+#     destination: Path,
+#     *,
+#     attempts: int,
+#     retry_seconds: float,
+#     copier: Callable[[Path, Path], Any] = shutil.copy2,
+#     sleep: Callable[[float], None] = time.sleep,
+# ) -> Path:
+#     """
+#     Copy one staged verification file to its final MasterBot location.
+
+#     The destination becomes visible under its final .csv name only after
+#     the copy completes successfully. Transport retries never involve ToS.
+#     """
+
+#     if attempts <= 0:
+#         raise ValueError(
+#             "Transport attempts must be positive."
+#         )
+
+#     if retry_seconds < 0:
+#         raise ValueError(
+#             "Transport retry delay cannot be negative."
+#         )
+
+#     destination.parent.mkdir(
+#         parents=True,
+#         exist_ok=True,
+#     )
+
+#     temp_path = destination.with_name(
+#         destination.name + ".tmp"
+#     )
+
+#     last_error: OSError | None = None
+
+#     for attempt in range(
+#         1,
+#         attempts + 1,
+#     ):
+#         try:
+#             copier(
+#                 source,
+#                 temp_path,
+#             )
+
+#             temp_path.replace(
+#                 destination
+#             )
+
+#             return destination
+
+#         except OSError as exc:
+#             last_error = exc
+
+#             if attempt < attempts:
+#                 sleep(retry_seconds)
+
+#     raise RuntimeError(
+#         "Could not transport staged Watchlist evidence "
+#         f"after {attempts} attempt(s): "
+#         f"{source} -> {destination}: {last_error}"
+#     ) from last_error
 
 
 def drain_staged_watchlist_evidence(
