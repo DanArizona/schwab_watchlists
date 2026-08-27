@@ -10,6 +10,8 @@ from schwab_watchlists.tos_watchlist_transport import (
     resume_exports_with_retry,
     run_watchlist_export,
     wait_for_scanner_state,
+    OutboxDrainResult,
+    drain_staged_watchlist_evidence,
 )
 
 
@@ -212,6 +214,255 @@ def test_transport_staged_file_retries_copy_without_tos(
 
     assert len(copy_calls) == 2
     assert sleep_calls == [0.5]
+
+
+def test_drain_staged_watchlist_evidence_transports_missing_and_skips_identical(
+    tmp_path,
+):
+    source_dir = (
+        tmp_path
+        / "outbox"
+    )
+
+    destination_dir = (
+        tmp_path
+        / "masterbot"
+        / "watchlist_verify"
+    )
+
+    source_dir.mkdir(
+        parents=True,
+    )
+
+    destination_dir.mkdir(
+        parents=True,
+    )
+
+    already_source = (
+        source_dir
+        / "COORD-OBS-aaaa-WL.csv"
+    )
+
+    missing_source = (
+        source_dir
+        / "COORD-MAT-bbbb-WL.csv"
+    )
+
+    already_source.write_text(
+        "Symbol\nAAPL\n",
+        encoding="utf-8",
+    )
+
+    missing_source.write_text(
+        "Symbol\nNVDA\n",
+        encoding="utf-8",
+    )
+
+    already_destination = (
+        destination_dir
+        / already_source.name
+    )
+
+    already_destination.write_bytes(
+        already_source.read_bytes()
+    )
+
+    result = (
+        drain_staged_watchlist_evidence(
+            source_dir,
+            destination_dir,
+            attempts=3,
+            retry_seconds=0.0,
+        )
+    )
+
+    missing_destination = (
+        destination_dir
+        / missing_source.name
+    )
+
+    assert result.successful is True
+
+    assert result.transported == (
+        missing_destination,
+    )
+
+    assert result.already_present == (
+        already_destination,
+    )
+
+    assert result.failed == ()
+
+    assert (
+        missing_destination.read_bytes()
+        == missing_source.read_bytes()
+    )
+
+
+def test_drain_staged_watchlist_evidence_rejects_conflicting_destination(
+    tmp_path,
+):
+    source_dir = tmp_path / "outbox"
+
+    destination_dir = (
+        tmp_path
+        / "masterbot"
+        / "watchlist_verify"
+    )
+
+    source_dir.mkdir(
+        parents=True,
+    )
+
+    destination_dir.mkdir(
+        parents=True,
+    )
+
+    source = (
+        source_dir
+        / "COORD-MAT-conflict-WL.csv"
+    )
+
+    destination = (
+        destination_dir
+        / source.name
+    )
+
+    source.write_text(
+        "Symbol\nAAPL\n",
+        encoding="utf-8",
+    )
+
+    destination.write_text(
+        "Symbol\nNVDA\n",
+        encoding="utf-8",
+    )
+
+    result = (
+        drain_staged_watchlist_evidence(
+            source_dir,
+            destination_dir,
+            attempts=3,
+            retry_seconds=0.0,
+        )
+    )
+
+    assert result.successful is False
+    assert result.transported == ()
+    assert result.already_present == ()
+
+    assert len(result.failed) == 1
+
+    failed_path, reason = (
+        result.failed[0]
+    )
+
+    assert failed_path == source
+
+    assert (
+        "different contents"
+        in reason
+    )
+
+    # Existing evidence was not overwritten.
+    assert destination.read_text(
+        encoding="utf-8"
+    ) == "Symbol\nNVDA\n"
+
+
+def test_drain_staged_watchlist_evidence_continues_after_transport_failure(
+    tmp_path,
+):
+    source_dir = tmp_path / "outbox"
+
+    destination_dir = (
+        tmp_path
+        / "masterbot"
+        / "watchlist_verify"
+    )
+
+    source_dir.mkdir(
+        parents=True,
+    )
+
+    bad_source = (
+        source_dir
+        / "COORD-MAT-aaaa-WL.csv"
+    )
+
+    good_source = (
+        source_dir
+        / "COORD-MAT-bbbb-WL.csv"
+    )
+
+    bad_source.write_text(
+        "Symbol\nBAD\n",
+        encoding="utf-8",
+    )
+
+    good_source.write_text(
+        "Symbol\nGOOD\n",
+        encoding="utf-8",
+    )
+
+    calls = []
+
+    def fake_transporter(
+        source,
+        destination,
+        **kwargs,
+    ):
+        calls.append(source.name)
+
+        if source == bad_source:
+            raise RuntimeError(
+                "simulated sticky failure"
+            )
+
+        destination.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        destination.write_bytes(
+            source.read_bytes()
+        )
+
+        return destination
+
+    result = (
+        drain_staged_watchlist_evidence(
+            source_dir,
+            destination_dir,
+            attempts=3,
+            retry_seconds=0.0,
+            transporter=fake_transporter,
+        )
+    )
+
+    good_destination = (
+        destination_dir
+        / good_source.name
+    )
+
+    assert result.successful is False
+
+    assert result.transported == (
+        good_destination,
+    )
+
+    assert len(result.failed) == 1
+
+    assert result.failed[0][0] == (
+        bad_source
+    )
+
+    assert calls == [
+        "COORD-MAT-aaaa-WL.csv",
+        "COORD-MAT-bbbb-WL.csv",
+    ]
+
+    assert good_destination.exists()
 
 
 def test_run_watchlist_export_uses_injected_command_builder(

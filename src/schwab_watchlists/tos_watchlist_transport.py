@@ -7,6 +7,7 @@ import time
 import shutil
 import subprocess
 
+from dataclasses import dataclass
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
@@ -24,6 +25,17 @@ class ScannerStateLike(Protocol):
 class ScannerControlResultLike(Protocol):
     successful: bool
     return_code: int
+
+
+@dataclass(frozen=True, slots=True)
+class OutboxDrainResult:
+    transported: tuple[Path, ...]
+    already_present: tuple[Path, ...]
+    failed: tuple[tuple[Path, str], ...]
+
+    @property
+    def successful(self) -> bool:
+        return not self.failed
 
 
 def build_watchlist_export_command(
@@ -199,6 +211,176 @@ def transport_staged_file(
         f"after {attempts} attempt(s): "
         f"{source} -> {destination}: {last_error}"
     ) from last_error
+
+
+def drain_staged_watchlist_evidence(
+    source_dir: Path,
+    destination_dir: Path,
+    *,
+    attempts: int,
+    retry_seconds: float,
+    transporter: Callable[..., Path] = transport_staged_file,
+) -> OutboxDrainResult:
+    """
+    Drain staged coordinator Watchlist evidence into MasterBot storage.
+
+    The operation is idempotent:
+
+    - missing destination -> transport it
+    - identical destination already exists -> skip it
+    - different destination already exists -> report conflict
+    - one failed file does not prevent later files from being attempted
+
+    No ThinkOrSwim operation is involved.
+    """
+
+    if attempts <= 0:
+        raise ValueError(
+            "Drain transport attempts must be positive."
+        )
+
+    if retry_seconds < 0:
+        raise ValueError(
+            "Drain retry delay cannot be negative."
+        )
+
+    source_dir = Path(source_dir)
+    destination_dir = Path(destination_dir)
+
+    transported: list[Path] = []
+    already_present: list[Path] = []
+    failed: list[tuple[Path, str]] = []
+
+    if not source_dir.is_dir():
+        return OutboxDrainResult(
+            transported=(),
+            already_present=(),
+            failed=(
+                (
+                    source_dir,
+                    "Watchlist verification outbox "
+                    "is not available.",
+                ),
+            ),
+        )
+
+    try:
+        destination_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+    except OSError as exc:
+        return OutboxDrainResult(
+            transported=(),
+            already_present=(),
+            failed=(
+                (
+                    destination_dir,
+                    "Could not prepare Watchlist "
+                    f"verification destination: {exc}",
+                ),
+            ),
+        )
+
+    try:
+        staged_files = sorted(
+            (
+                path
+                for path in source_dir.glob(
+                    "COORD-*-WL.csv"
+                )
+                if path.is_file()
+            ),
+            key=lambda path: path.name,
+        )
+
+    except OSError as exc:
+        return OutboxDrainResult(
+            transported=(),
+            already_present=(),
+            failed=(
+                (
+                    source_dir,
+                    "Could not scan Watchlist "
+                    f"verification outbox: {exc}",
+                ),
+            ),
+        )
+
+    for source_path in staged_files:
+        destination_path = (
+            destination_dir
+            / source_path.name
+        )
+
+        if destination_path.exists():
+            try:
+                source_bytes = (
+                    source_path.read_bytes()
+                )
+
+                destination_bytes = (
+                    destination_path.read_bytes()
+                )
+
+            except OSError as exc:
+                failed.append(
+                    (
+                        source_path,
+                        "Could not compare staged and "
+                        f"destination evidence: {exc}",
+                    )
+                )
+
+                continue
+
+            if source_bytes == destination_bytes:
+                already_present.append(
+                    destination_path
+                )
+
+            else:
+                failed.append(
+                    (
+                        source_path,
+                        "Destination already exists "
+                        "with different contents: "
+                        f"{destination_path}",
+                    )
+                )
+
+            continue
+
+        try:
+            transporter(
+                source_path,
+                destination_path,
+                attempts=attempts,
+                retry_seconds=retry_seconds,
+            )
+
+        except Exception as exc:
+            failed.append(
+                (
+                    source_path,
+                    str(exc),
+                )
+            )
+
+            continue
+
+        transported.append(
+            destination_path
+        )
+
+    return OutboxDrainResult(
+        transported=tuple(transported),
+        already_present=tuple(
+            already_present
+        ),
+        failed=tuple(failed),
+    )
 
 
 def scanner_state_matches(
