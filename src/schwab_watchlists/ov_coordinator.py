@@ -1,8 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
+
+from pathlib import Path
+from typing import Any
+
+from mb_market_data.decision_batch import (
+    DecisionSnapshotBatch,
+    build_decision_snapshot_batch,
+)
+from mb_market_data.schwab_quotes import (
+    DEFAULT_QUOTE_BATCH_SIZE,
+    fetch_quotes_batched,
+)
+from mb_market_data.tos_watchlist import (
+    read_tos_watchlist,
+)
+
 
 from mb_market_data.decision_batch import (
     DecisionSnapshotBatch,
@@ -30,6 +46,66 @@ class OVSelection:
     selected_symbols: tuple[str, ...]
     eligible_count: int
     excluded_symbols: tuple[str, ...]
+
+
+UTC = timezone.utc
+
+
+def acquire_live_ov_batch(
+    client: Any,
+    watchlist_path: Path,
+    *,
+    trade_date: date,
+    fields: str = "all",
+    batch_size: int = DEFAULT_QUOTE_BATCH_SIZE,
+    observed_at_factory=lambda: datetime.now(UTC),
+) -> DecisionSnapshotBatch:
+    """
+    Acquire the minimal live inputs needed for the OV POC.
+
+    Sequence intentionally matches the proven mb_market_data live probe:
+
+        read ToS OV_DECISION file
+            ->
+        record when MasterBot accepted that data
+            ->
+        fetch Schwab quotes for those symbols
+            ->
+        assemble DecisionSnapshotBatch
+    """
+
+    watchlist_path = Path(
+        watchlist_path
+    ).expanduser()
+
+    watchlist = read_tos_watchlist(
+        watchlist_path
+    )
+
+    tos_observed_at_utc = (
+        observed_at_factory()
+    )
+
+    symbols = [
+        row.symbol
+        for row in watchlist.rows
+    ]
+
+    quote_batch = fetch_quotes_batched(
+        client,
+        symbols,
+        fields=fields,
+        batch_size=batch_size,
+    )
+
+    return build_decision_snapshot_batch(
+        trade_date=trade_date,
+        watchlist=watchlist,
+        quote_batch=quote_batch,
+        tos_observed_at_utc=(
+            tos_observed_at_utc
+        ),
+    )
 
 
 def select_ov_symbols(

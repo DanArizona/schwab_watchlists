@@ -43,6 +43,220 @@ def batch(
     )
 
 
+def test_acquire_live_ov_batch_reads_tos_then_fetches_quotes(
+    monkeypatch,
+    tmp_path,
+):
+    import schwab_watchlists.ov_coordinator as module
+
+    watchlist_path = (
+        tmp_path
+        / "2026-08-27-WL.csv"
+    )
+
+    fake_watchlist = SimpleNamespace(
+        rows=(
+            SimpleNamespace(
+                symbol="NVDA"
+            ),
+            SimpleNamespace(
+                symbol="AAPL"
+            ),
+        ),
+    )
+
+    fake_quote_batch = object()
+    fake_decision_batch = object()
+
+    events = []
+
+    monkeypatch.setattr(
+        module,
+        "read_tos_watchlist",
+        lambda path: (
+            events.append(
+                ("read", path)
+            )
+            or fake_watchlist
+        ),
+    )
+
+    def fake_fetch(
+        client,
+        symbols,
+        *,
+        fields,
+        batch_size,
+    ):
+        events.append(
+            (
+                "fetch",
+                client,
+                tuple(symbols),
+                fields,
+                batch_size,
+            )
+        )
+
+        return fake_quote_batch
+
+    monkeypatch.setattr(
+        module,
+        "fetch_quotes_batched",
+        fake_fetch,
+    )
+
+    observed_at = datetime(
+        2026,
+        8,
+        27,
+        13,
+        25,
+        tzinfo=ZoneInfo("UTC"),
+    )
+
+    def fake_build(**kwargs):
+        events.append(
+            (
+                "build",
+                kwargs,
+            )
+        )
+
+        return fake_decision_batch
+
+    monkeypatch.setattr(
+        module,
+        "build_decision_snapshot_batch",
+        fake_build,
+    )
+
+    client = object()
+
+    result = module.acquire_live_ov_batch(
+        client,
+        watchlist_path,
+        trade_date=date(
+            2026,
+            8,
+            27,
+        ),
+        observed_at_factory=(
+            lambda: observed_at
+        ),
+    )
+
+    assert result is fake_decision_batch
+
+    assert events[0] == (
+        "read",
+        watchlist_path,
+    )
+
+    assert events[1][0] == "fetch"
+
+    assert events[1][2] == (
+        "NVDA",
+        "AAPL",
+    )
+
+    assert events[1][3] == "all"
+
+    assert events[2][0] == "build"
+
+    build_kwargs = events[2][1]
+
+    assert build_kwargs[
+        "trade_date"
+    ] == date(
+        2026,
+        8,
+        27,
+    )
+
+    assert build_kwargs[
+        "watchlist"
+    ] is fake_watchlist
+
+    assert build_kwargs[
+        "quote_batch"
+    ] is fake_quote_batch
+
+    assert build_kwargs[
+        "tos_observed_at_utc"
+    ] == observed_at
+
+
+def test_acquire_live_ov_batch_preserves_requested_fields_and_batch_size(
+    monkeypatch,
+    tmp_path,
+):
+    import schwab_watchlists.ov_coordinator as module
+
+    fake_watchlist = SimpleNamespace(
+        rows=(
+            SimpleNamespace(
+                symbol="NVDA"
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(
+        module,
+        "read_tos_watchlist",
+        lambda path: fake_watchlist,
+    )
+
+    captured = {}
+
+    def fake_fetch(
+        client,
+        symbols,
+        *,
+        fields,
+        batch_size,
+    ):
+        captured["fields"] = fields
+        captured["batch_size"] = (
+            batch_size
+        )
+
+        return object()
+
+    monkeypatch.setattr(
+        module,
+        "fetch_quotes_batched",
+        fake_fetch,
+    )
+
+    expected = object()
+
+    monkeypatch.setattr(
+        module,
+        "build_decision_snapshot_batch",
+        lambda **kwargs: expected,
+    )
+
+    result = module.acquire_live_ov_batch(
+        object(),
+        tmp_path / "source.csv",
+        trade_date=date(
+            2026,
+            8,
+            27,
+        ),
+        fields="quote",
+        batch_size=17,
+    )
+
+    assert result is expected
+
+    assert captured == {
+        "fields": "quote",
+        "batch_size": 17,
+    }
+    
+
 def test_select_ov_symbols_ranks_by_volume_descending():
     source = batch(
         snapshot("BBBB", 500),

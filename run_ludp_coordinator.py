@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import sys
 import time
@@ -11,6 +12,13 @@ from pathlib import Path
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from mb_tools.schwab_secure.client import (
+    SchwabdevNotInstalledError,
+    make_secure_schwab_client,
+)
+from mb_tools.schwab_secure.config import (
+    SecureSchwabConfigError,
+)
 from mb_market_data.nasdaq_halt_monitor import (
     NasdaqHaltMonitor,
 )
@@ -39,6 +47,10 @@ from schwab_watchlists.ludp_coordinator import (
     build_ludp_intent,
     reconcile_tos_until_stable,
 )
+from schwab_watchlists.ov_coordinator import (
+    acquire_live_ov_batch,
+    build_ov_base_intent,
+)
 from schwab_watchlists.tos_coordinator_executor import (
     LiveToSExecutor,
 )
@@ -52,6 +64,8 @@ EASTERN = ZoneInfo("America/New_York")
 DEFAULT_POLL_SECONDS = 60.0
 DEFAULT_FETCH_TIMEOUT = 60.0
 DEFAULT_SCANNER_WAIT = 30.0
+DEFAULT_SCHWAB_TIMEOUT = 10
+DEFAULT_ECFG_NAME = "secure_schwabdev.ecfg"
 
 
 @dataclass(slots=True)
@@ -91,6 +105,17 @@ def build_ludp_intent_id() -> str:
 
     return (
         "ludp-"
+        + now.strftime("%Y%m%d-%H%M%S")
+        + "-"
+        + uuid4().hex[:8]
+    )
+
+
+def build_ov_intent_id() -> str:
+    now = now_et()
+
+    return (
+        "ov-"
         + now.strftime("%Y%m%d-%H%M%S")
         + "-"
         + uuid4().hex[:8]
@@ -278,6 +303,68 @@ def resolve_verification_outbox_dir() -> Path:
     )
 
 
+def resolve_ecfg_path(
+    explicit_path: Path | None,
+) -> Path:
+    if explicit_path is not None:
+        return explicit_path.expanduser()
+
+    schwab_ecfg = os.environ.get(
+        "MB_SCHWAB_ECFG"
+    )
+
+    if schwab_ecfg:
+        return Path(
+            schwab_ecfg
+        ).expanduser()
+
+    vault = os.environ.get(
+        "MB_VAULT"
+    )
+
+    if vault:
+        return (
+            Path(vault).expanduser()
+            / DEFAULT_ECFG_NAME
+        )
+
+    return Path(
+        DEFAULT_ECFG_NAME
+    )
+
+
+def determine_startup_mode(
+    args: argparse.Namespace,
+) -> str:
+    has_baseline = (
+        args.baseline is not None
+    )
+
+    has_ov = (
+        args.ov_watchlist is not None
+    )
+
+    if has_baseline == has_ov:
+        raise ValueError(
+            "Specify exactly one startup source: "
+            "either baseline CSV or --ov-watchlist."
+        )
+
+    if has_ov:
+        if (
+            args.ov_limit is None
+            or args.ov_limit <= 0
+        ):
+            raise ValueError(
+                "--ov-limit must be positive "
+                "when --ov-watchlist is used."
+            )
+
+        return "ov"
+
+    return "baseline"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -289,8 +376,53 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "baseline",
         type=Path,
+        nargs="?",
+        default=None,
         help=(
-            "Authoritative bootstrap Watchlist CSV."
+            "Optional authoritative bootstrap Watchlist CSV. "
+            "Omit when using --ov-watchlist."
+        ),
+    )
+
+    parser.add_argument(
+        "--ov-watchlist",
+        type=Path,
+        default=None,
+        help=(
+            "Same-day ToS Watchlist CSV containing OV_DECISION. "
+            "Uses live Schwab quotes to build the initial BASE_SET."
+        ),
+    )
+
+    parser.add_argument(
+        "--ov-limit",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of Overnight Volume symbols "
+            "to include in BASE_SET."
+        ),
+    )
+
+    parser.add_argument(
+        "--ecfg",
+        type=Path,
+        default=None,
+        help=(
+            "Encrypted Schwab configuration. Defaults to "
+            "MB_SCHWAB_ECFG, then "
+            "MB_VAULT\\secure_schwabdev.ecfg, "
+            "then the current directory."
+        ),
+    )
+
+    parser.add_argument(
+        "--schwab-timeout",
+        type=int,
+        default=DEFAULT_SCHWAB_TIMEOUT,
+        help=(
+            "Schwab client request timeout in seconds. "
+            "Default: 10."
         ),
     )
 
@@ -351,6 +483,19 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
 
+    try:
+        startup_mode = (
+            determine_startup_mode(
+                args
+            )
+        )
+    except ValueError as exc:
+        print(
+            f"ERROR: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
     if not args.live:
         print(
             "ERROR: --live is required.",
@@ -380,6 +525,14 @@ def main() -> int:
         )
         return 2
 
+    if args.schwab_timeout < 1:
+        print(
+            "ERROR: --schwab-timeout "
+            "must be at least 1.",
+            file=sys.stderr,
+        )
+        return 2
+
     if args.wait <= 0:
         print(
             "ERROR: --wait must be positive.",
@@ -387,25 +540,7 @@ def main() -> int:
         )
         return 2
 
-    baseline_path = (
-        args.baseline.expanduser().resolve()
-    )
-
-    if not baseline_path.is_file():
-        print(
-            "ERROR: baseline file does not exist: "
-            f"{baseline_path}",
-            file=sys.stderr,
-        )
-        return 2
-
     try:
-        baseline_symbols = frozenset(
-            read_watchlist_symbols(
-                baseline_path
-            )
-        )
-
         verification_dir = (
             resolve_verification_dir()
         )
@@ -426,15 +561,183 @@ def main() -> int:
 
     coordinator = WatchlistCoordinator()
 
-    baseline_intent = build_baseline_intent(
-        baseline_symbols,
-        created_at=start_time,
-        baseline_path=baseline_path,
-    )
+    startup_description: str
+    startup_symbol_count: int
+    startup_ranked_symbols: tuple[
+        str,
+        ...
+    ] | None = None
+
+    if startup_mode == "baseline":
+        assert args.baseline is not None
+
+        baseline_path = (
+            args.baseline
+            .expanduser()
+            .resolve()
+        )
+
+        if not baseline_path.is_file():
+            print(
+                "ERROR: baseline file does not exist: "
+                f"{baseline_path}",
+                file=sys.stderr,
+            )
+            return 2
+
+        try:
+            baseline_symbols = frozenset(
+                read_watchlist_symbols(
+                    baseline_path
+                )
+            )
+
+        except Exception as exc:
+            print(
+                f"ERROR: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+
+        startup_intent = (
+            build_baseline_intent(
+                baseline_symbols,
+                created_at=start_time,
+                baseline_path=(
+                    baseline_path
+                ),
+            )
+        )
+
+        startup_description = (
+            f"Baseline CSV: {baseline_path}"
+        )
+
+        startup_symbol_count = len(
+            baseline_symbols
+        )
+
+    else:
+        assert args.ov_watchlist is not None
+        assert args.ov_limit is not None
+
+        ov_watchlist_path = (
+            args.ov_watchlist
+            .expanduser()
+            .resolve()
+        )
+
+        if not ov_watchlist_path.is_file():
+            print(
+                "ERROR: OV Watchlist file "
+                "does not exist: "
+                f"{ov_watchlist_path}",
+                file=sys.stderr,
+            )
+            return 2
+
+        ecfg_path = (
+            resolve_ecfg_path(
+                args.ecfg
+            ).resolve()
+        )
+
+        if not ecfg_path.is_file():
+            print(
+                "ERROR: Schwab encrypted "
+                "configuration does not exist: "
+                f"{ecfg_path}",
+                file=sys.stderr,
+            )
+            return 2
+
+        client = None
+
+        try:
+            password = getpass.getpass(
+                "ecfg password: "
+            )
+
+            client = (
+                make_secure_schwab_client(
+                    ecfg_path,
+                    password,
+                    timeout=(
+                        args.schwab_timeout
+                    ),
+                )
+            )
+
+            ov_batch = acquire_live_ov_batch(
+                client,
+                ov_watchlist_path,
+                trade_date=session_date,
+            )
+
+            intent_time = now_et()
+
+            startup_intent = (
+                build_ov_base_intent(
+                    ov_batch,
+                    limit=args.ov_limit,
+                    intent_id=(
+                        build_ov_intent_id()
+                    ),
+                    created_at=(
+                        intent_time
+                    ),
+                )
+            )
+
+        except SchwabdevNotInstalledError as exc:
+            print(
+                f"ERROR: {exc}",
+                file=sys.stderr,
+            )
+            return 3
+
+        except SecureSchwabConfigError as exc:
+            print(
+                "ERROR: Invalid Schwab "
+                f"configuration: {exc}",
+                file=sys.stderr,
+            )
+            return 4
+
+        except Exception as exc:
+            print(
+                "ERROR: OV acquisition failed: "
+                f"{type(exc).__name__}: "
+                f"{exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+        finally:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+
+        startup_ranked_symbols = tuple(
+            startup_intent.metadata[
+                "ranked_symbols"
+            ]
+        )
+
+        startup_description = (
+            f"Overnight Volume: "
+            f"{ov_watchlist_path}"
+        )
+
+        startup_symbol_count = len(
+            startup_intent.symbols
+        )
 
     coordinator.accept_intent(
-        baseline_intent,
-        at=start_time,
+        startup_intent,
+        at=startup_intent.created_at,
     )
 
     executor = LiveToSExecutor(
@@ -458,19 +761,33 @@ def main() -> int:
         ),
     )
 
-    print("MasterBot LUDP Coordinator")
+    print(
+        "MasterBot OV + LUDP Coordinator"
+    )
+
     print("=" * 70)
     print(
         f"Session date : "
         f"{session_date.isoformat()} ET"
     )
     print(
-        f"Baseline     : {baseline_path}"
+        f"Base producer: "
+        f"{startup_description}"
     )
+
     print(
-        f"Baseline syms: "
-        f"{len(baseline_symbols)}"
+        f"BASE_SET syms: "
+        f"{startup_symbol_count}"
     )
+
+    if startup_ranked_symbols is not None:
+        print(
+            "OV ranking   : "
+            + " ".join(
+                startup_ranked_symbols
+            )
+        )
+
     print(
         f"Verify dir   : "
         f"{verification_dir}"
@@ -487,12 +804,11 @@ def main() -> int:
         "Reason codes : LUDP, M"
     )
     print()
-
     #
     # First make ToS agree with the authoritative baseline.
     #
     print(
-        "Reconciling bootstrap baseline..."
+        "Reconciling startup BASE_SET..."
     )
 
     try:
@@ -507,7 +823,7 @@ def main() -> int:
 
     except Exception as exc:
         print(
-            "ERROR: baseline reconciliation "
+            "ERROR: BASE_SET reconciliation "
             f"failed: {type(exc).__name__}: "
             f"{exc}",
             file=sys.stderr,
@@ -515,7 +831,7 @@ def main() -> int:
         return 1
 
     print(
-        "Baseline stable : YES "
+        "BASE_SET stable : YES "
         f"({len(steps)} step(s))"
     )
     print()

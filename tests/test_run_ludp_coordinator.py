@@ -1,6 +1,7 @@
 from datetime import datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
+from pathlib import Path
 
 import pytest
 
@@ -75,6 +76,76 @@ class FakeCoordinator:
                     + 1
                 ),
             )
+        )
+
+
+def test_determine_startup_mode_accepts_baseline():
+    args = SimpleNamespace(
+        baseline=Path("baseline.csv"),
+        ov_watchlist=None,
+        ov_limit=None,
+    )
+
+    assert (
+        module.determine_startup_mode(
+            args
+        )
+        == "baseline"
+    )
+
+
+def test_determine_startup_mode_accepts_ov():
+    args = SimpleNamespace(
+        baseline=None,
+        ov_watchlist=Path(
+            "ov.csv"
+        ),
+        ov_limit=25,
+    )
+
+    assert (
+        module.determine_startup_mode(
+            args
+        )
+        == "ov"
+    )
+
+
+def test_determine_startup_mode_rejects_both_sources():
+    args = SimpleNamespace(
+        baseline=Path(
+            "baseline.csv"
+        ),
+        ov_watchlist=Path(
+            "ov.csv"
+        ),
+        ov_limit=25,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="exactly one",
+    ):
+        module.determine_startup_mode(
+            args
+        )
+
+
+def test_determine_startup_mode_requires_positive_ov_limit():
+    args = SimpleNamespace(
+        baseline=None,
+        ov_watchlist=Path(
+            "ov.csv"
+        ),
+        ov_limit=0,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="ov-limit",
+    ):
+        module.determine_startup_mode(
+            args
         )
 
 
