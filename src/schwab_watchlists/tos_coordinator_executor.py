@@ -30,6 +30,7 @@ from .tos_watchlist_transport import (
     resume_exports_with_retry,
     run_watchlist_export,
     scanner_state_matches,
+    transport_staged_file,
     wait_for_file,
     wait_for_scanner_state,
 )
@@ -49,17 +50,24 @@ class LiveToSExecutor:
 
     scanner_state_wait: float = 10.0
     state_poll_seconds: float = 0.25
+
     verify_wait: float = 45.0
-    verify_attempts: int = 2
-    resume_attempts: int = 3
+
+    verification_outbox_dir: Path | None = None
+
+    transport_attempts: int = 3
+    transport_retry_seconds: float = 1.0
+
+    resume_attempts: int = 3    
     resume_retry_seconds: float = 1.0
 
     def observe(self) -> AdapterObservationResult:
         """
         Obtain one fresh, explicit ThinkOrSwim Watchlist observation.
 
-        Scheduled exports remain suspended until the explicit Watchlist
-        export has been read on MasterBot.
+        ToS remains suspended only until El-Cheapo has confirmed and
+        staged the local export. Network transport to MasterBot occurs
+        after scheduled exports have been resumed.
         """
 
         preflight = self.preflight_checker(
@@ -86,13 +94,31 @@ class LiveToSExecutor:
             / target_filename
         )
 
+        staged_path = (
+            self._verification_stage_path(
+                target_filename
+            )
+        )
+
         if verification_path.exists():
             raise RuntimeError(
                 "Refusing to reuse an existing "
                 f"Watchlist observation file: {verification_path}"
             )
 
+        if (
+            staged_path != verification_path
+            and staged_path.exists()
+        ):
+            raise RuntimeError(
+                "Refusing to reuse an existing staged "
+                f"Watchlist observation file: {staged_path}"
+            )
+
         suspend_attempted = False
+        resume_attempted_after_stage = False
+
+        resume_error: RuntimeError | None = None
         observed_state: AdapterObservedState | None = None
 
         try:
@@ -140,13 +166,43 @@ class LiveToSExecutor:
                     f"exit code={export_return_code}."
                 )
 
+            #
+            # This wait is now for El-Cheapo's LOCAL staged evidence,
+            # not for the final MasterBot copy.
+            #
             if not wait_for_file(
-                verification_path,
+                staged_path,
                 timeout=self.verify_wait,
             ):
                 raise RuntimeError(
-                    "Watchlist observation CSV did not appear: "
-                    f"{verification_path}"
+                    "Staged Watchlist observation CSV "
+                    f"did not appear: {staged_path}"
+                )
+
+            #
+            # GUI-critical work is now complete.
+            # Release ToS before doing any network transport.
+            #
+            resume_attempted_after_stage = True
+
+            try:
+                self._resume_exports()
+
+            except RuntimeError as exc:
+                resume_error = exc
+
+            #
+            # Compatibility mode skips transport when source and
+            # destination are the same path.
+            #
+            if staged_path != verification_path:
+                transport_staged_file(
+                    staged_path,
+                    verification_path,
+                    attempts=self.transport_attempts,
+                    retry_seconds=(
+                        self.transport_retry_seconds
+                    ),
                 )
 
             symbols = read_watchlist_symbols(
@@ -161,40 +217,42 @@ class LiveToSExecutor:
             )
 
         finally:
-            if suspend_attempted:
+            #
+            # If we failed before local staging, we still have to
+            # restore scheduled exports here.
+            #
+            if (
+                suspend_attempted
+                and not resume_attempted_after_stage
+            ):
                 try:
                     self._resume_exports()
-                except RuntimeError as exc:
-                    if observed_state is not None:
-                        return AdapterObservationResult(
-                            observed_state=observed_state,
-                            health_state=AdapterHealthState(
-                                adapter_id="tos",
-                                status=(
-                                    AdapterHealthStatus.DEGRADED
-                                ),
-                                observed_at=(
-                                    datetime.now(EASTERN)
-                                ),
-                                reason=str(exc),
-                                evidence_ref=str(
-                                    verification_path
-                                ),
-                            ),
-                        )
 
-                    raise
+                except RuntimeError as exc:
+                    resume_error = exc
 
         assert observed_state is not None
 
-        return AdapterObservationResult(
-            observed_state=observed_state,
-            health_state=AdapterHealthState(
+        if resume_error is not None:
+            health = AdapterHealthState(
+                adapter_id="tos",
+                status=AdapterHealthStatus.DEGRADED,
+                observed_at=datetime.now(EASTERN),
+                reason=str(resume_error),
+                evidence_ref=str(verification_path),
+            )
+
+        else:
+            health = AdapterHealthState(
                 adapter_id="tos",
                 status=AdapterHealthStatus.HEALTHY,
                 observed_at=datetime.now(EASTERN),
                 evidence_ref=str(verification_path),
-            ),
+            )
+
+        return AdapterObservationResult(
+            observed_state=observed_state,
+            health_state=health,
         )
 
     def materialize(
@@ -285,6 +343,12 @@ class LiveToSExecutor:
             / target_filename
         )
 
+        staged_path = (
+            self._verification_stage_path(
+                target_filename
+            )
+        )
+
         if verification_path.exists():
             return MaterializationExecutionResult(
                 transaction_id=transaction.transaction_id,
@@ -296,11 +360,27 @@ class LiveToSExecutor:
                 ),
             )
 
+        if (
+            staged_path != verification_path
+            and staged_path.exists()
+        ):
+            return MaterializationExecutionResult(
+                transaction_id=transaction.transaction_id,
+                status=MaterializationExecutionStatus.FAILED,
+                reason=(
+                    "Refusing to reuse an existing staged "
+                    "Watchlist materialization evidence file: "
+                    f"{staged_path}"
+                ),
+            )
+
         execution_result: (
             MaterializationExecutionResult | None
         ) = None
 
         suspend_attempted = False
+        resume_attempted_after_stage = False
+        resume_error: Exception | None = None
 
         try:
             suspend_attempted = True
@@ -491,92 +571,79 @@ class LiveToSExecutor:
                                             ),
                                         )
                                     )
+
                                 else:
-                                    observed = None
-                                    verification_error = None
+                                    try:
+                                        (
+                                            _,
+                                            export_return_code,
+                                        ) = run_watchlist_export(
+                                            target_filename=(
+                                                target_filename
+                                            ),
+                                            root=self.root,
+                                            wait=self.wait,
+                                        )
 
-                                    for verification_attempt in range(
-                                        1,
-                                        self.verify_attempts + 1,
-                                    ):
-                                        if verification_attempt > 1:
-                                            target_filename = (
-                                                self._build_materialization_filename()
+                                        if export_return_code != 0:
+                                            raise RuntimeError(
+                                                "export_wl was not "
+                                                "reported as "
+                                                "successful; "
+                                                f"exit code="
+                                                f"{export_return_code}."
                                             )
 
-                                            verification_path = (
-                                                self.verification_dir
-                                                / target_filename
+                                        #
+                                        # Wait only for the local
+                                        # El-Cheapo outbox artifact.
+                                        #
+                                        if not wait_for_file(
+                                            staged_path,
+                                            timeout=self.verify_wait,
+                                        ):
+                                            raise RuntimeError(
+                                                "Staged Watchlist "
+                                                "materialization CSV "
+                                                "did not appear: "
+                                                f"{staged_path}"
                                             )
+
+                                        #
+                                        # ToS work is complete.
+                                        # Release the GUI before any
+                                        # network copy.
+                                        #
+                                        resume_attempted_after_stage = True
 
                                         try:
-                                            (
-                                                _,
-                                                export_return_code,
-                                            ) = run_watchlist_export(
-                                                target_filename=(
-                                                    target_filename
-                                                ),
-                                                root=self.root,
-                                                wait=self.wait,
-                                            )
-
-                                            if export_return_code != 0:
-                                                raise RuntimeError(
-                                                    "export_wl was not "
-                                                    "reported as "
-                                                    "successful; "
-                                                    f"exit code="
-                                                    f"{export_return_code}."
-                                                )
-
-                                            if not wait_for_file(
-                                                verification_path,
-                                                timeout=self.verify_wait,
-                                            ):
-                                                raise RuntimeError(
-                                                    "Watchlist "
-                                                    "materialization CSV "
-                                                    "did not appear: "
-                                                    f"{verification_path}"
-                                                )
-
-                                            symbols = (
-                                                read_watchlist_symbols(
-                                                    verification_path
-                                                )
-                                            )
+                                            self._resume_exports()
 
                                         except Exception as exc:
-                                            verification_error = exc
+                                            resume_error = exc
 
-                                            if (
-                                                verification_attempt
-                                                < self.verify_attempts
-                                            ):
-                                                continue
-
-                                        else:
-                                            observed = (
-                                                AdapterObservedState(
-                                                    adapter_id="tos",
-                                                    symbols=frozenset(
-                                                        symbols
-                                                    ),
-                                                    observed_at=(
-                                                        datetime.now(
-                                                            EASTERN
-                                                        )
-                                                    ),
-                                                    evidence_ref=str(
-                                                        verification_path
-                                                    ),
-                                                )
+                                        if (
+                                            staged_path
+                                            != verification_path
+                                        ):
+                                            transport_staged_file(
+                                                staged_path,
+                                                verification_path,
+                                                attempts=(
+                                                    self.transport_attempts
+                                                ),
+                                                retry_seconds=(
+                                                    self.transport_retry_seconds
+                                                ),
                                             )
 
-                                            break
+                                        symbols = (
+                                            read_watchlist_symbols(
+                                                verification_path
+                                            )
+                                        )
 
-                                    if observed is None:
+                                    except Exception as exc:
                                         execution_result = (
                                             MaterializationExecutionResult(
                                                 transaction_id=(
@@ -593,18 +660,30 @@ class LiveToSExecutor:
                                                     "successful, but "
                                                     "a trustworthy "
                                                     "observation could "
-                                                    "not be obtained "
-                                                    f"after "
-                                                    f"{self.verify_attempts} "
-                                                    "verification "
-                                                    "attempts; "
-                                                    "last error: "
-                                                    f"{verification_error}"
+                                                    "not be obtained: "
+                                                    f"{exc}"
                                                 ),
                                             )
                                         )
 
                                     else:
+                                        observed = (
+                                            AdapterObservedState(
+                                                adapter_id="tos",
+                                                symbols=frozenset(
+                                                    symbols
+                                                ),
+                                                observed_at=(
+                                                    datetime.now(
+                                                        EASTERN
+                                                    )
+                                                ),
+                                                evidence_ref=str(
+                                                    verification_path
+                                                ),
+                                            )
+                                        )
+
                                         execution_result = (
                                             MaterializationExecutionResult(
                                                 transaction_id=(
@@ -622,36 +701,49 @@ class LiveToSExecutor:
         finally:
             health: AdapterHealthState | None = None
 
-            if suspend_attempted:
+            #
+            # If local staging was never reached, resume here.
+            # If staging was reached, resume was already attempted
+            # BEFORE transport.
+            #
+            if (
+                suspend_attempted
+                and not resume_attempted_after_stage
+            ):
                 try:
                     self._resume_exports()
 
                 except Exception as exc:
-                    health = AdapterHealthState(
-                        adapter_id="tos",
-                        status=(
-                            AdapterHealthStatus.DEGRADED
-                        ),
-                        observed_at=datetime.now(EASTERN),
-                        reason=str(exc),
-                        evidence_ref=(
-                            str(verification_path)
-                            if verification_path.exists()
-                            else None
-                        ),
-                    )
+                    resume_error = exc
 
-                else:
-                    health = AdapterHealthState(
-                        adapter_id="tos",
-                        status=AdapterHealthStatus.HEALTHY,
-                        observed_at=datetime.now(EASTERN),
-                        evidence_ref=(
-                            str(verification_path)
-                            if verification_path.exists()
-                            else None
-                        ),
-                    )
+            evidence_ref: str | None = None
+
+            if verification_path.exists():
+                evidence_ref = str(
+                    verification_path
+                )
+
+            elif staged_path.exists():
+                evidence_ref = str(
+                    staged_path
+                )
+
+            if resume_error is not None:
+                health = AdapterHealthState(
+                    adapter_id="tos",
+                    status=AdapterHealthStatus.DEGRADED,
+                    observed_at=datetime.now(EASTERN),
+                    reason=str(resume_error),
+                    evidence_ref=evidence_ref,
+                )
+
+            elif suspend_attempted:
+                health = AdapterHealthState(
+                    adapter_id="tos",
+                    status=AdapterHealthStatus.HEALTHY,
+                    observed_at=datetime.now(EASTERN),
+                    evidence_ref=evidence_ref,
+                )
 
         if execution_result is None:
             raise RuntimeError(
@@ -668,6 +760,25 @@ class LiveToSExecutor:
             observed_state=execution_result.observed_state,
             reason=execution_result.reason,
             health_state=health,
+        )
+
+
+    def _verification_stage_path(
+        self,
+        target_filename: str,
+    ) -> Path:
+        if self.verification_outbox_dir is None:
+            # Backward-compatible path for unit tests and non-outbox
+            # callers. Live coordinator probes will explicitly supply
+            # the El-Cheapo verification outbox.
+            return (
+                self.verification_dir
+                / target_filename
+            )
+
+        return (
+            self.verification_outbox_dir
+            / target_filename
         )
 
 

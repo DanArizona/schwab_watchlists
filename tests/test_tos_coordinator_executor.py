@@ -224,22 +224,105 @@ def test_observe_preserves_observation_if_resume_fails(
     )
 
 
-# def test_materialize_is_not_enabled_yet(
-#     tmp_path,
-# ):
-#     executor = LiveToSExecutor(
-#         root=None,
-#         verification_dir=tmp_path,
-#         wait=30.0,
-#         preflight_checker=lambda **kwargs: None,
-#         control_executor=lambda **kwargs: None,
-#     )
+def test_observe_resumes_before_transport(
+    tmp_path,
+    monkeypatch,
+):
+    states = [
+        make_scanner_state(suspended=False),
+        make_scanner_state(suspended=True),
+        make_scanner_state(suspended=False),
+    ]
 
-#     with pytest.raises(
-#         NotImplementedError,
-#         match="next integration step",
-#     ):
-#         executor.materialize(None)
+    events = []
+
+    def preflight_checker(**kwargs):
+        return states.pop(0)
+
+    def control_executor(**kwargs):
+        events.append(
+            kwargs["action"]
+        )
+
+        return SimpleNamespace(
+            successful=True,
+            return_code=0,
+        )
+
+    monkeypatch.setattr(
+        executor_module,
+        "run_watchlist_export",
+        lambda **kwargs: (
+            events.append("export")
+            or (
+                ("mb-scan-command", "export_wl"),
+                0,
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        executor_module,
+        "wait_for_file",
+        lambda path, timeout: (
+            events.append("stage-ready")
+            or True
+        ),
+    )
+
+    def fake_transport(
+        source,
+        destination,
+        **kwargs,
+    ):
+        events.append("transport")
+
+        destination.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        destination.write_text(
+            "Symbol\nAAPL\n",
+            encoding="utf-8",
+        )
+
+        return destination
+
+    monkeypatch.setattr(
+        executor_module,
+        "transport_staged_file",
+        fake_transport,
+    )
+
+    monkeypatch.setattr(
+        executor_module,
+        "read_watchlist_symbols",
+        lambda path: {"AAPL"},
+    )
+
+    executor = LiveToSExecutor(
+        root=None,
+        verification_dir=tmp_path / "verify",
+        verification_outbox_dir=(
+            tmp_path / "outbox"
+        ),
+        wait=30.0,
+        preflight_checker=preflight_checker,
+        control_executor=control_executor,
+    )
+
+    result = executor.observe()
+
+    assert result.observed_state.symbols == frozenset(
+        {"AAPL"}
+    )
+
+    assert events.index(
+        "resume_exports"
+    ) < events.index(
+        "transport"
+    )
 
 
 def test_materialize_add_returns_complete_observation(
@@ -502,7 +585,7 @@ def test_export_failure_after_mutation_is_outcome_unknown(
     )
 
 
-def test_materialize_retries_verification_export_without_repeating_mutation(
+def test_materialize_resumes_before_transport_without_repeating_mutation(
     tmp_path,
     monkeypatch,
 ):
@@ -512,24 +595,60 @@ def test_materialize_retries_verification_export_without_repeating_mutation(
         make_scanner_state(suspended=False),
     ]
 
-    export_filenames = []
+    events = []
+
+    def preflight_checker(**kwargs):
+        return states.pop(0)
+
+    def control_executor(**kwargs):
+        action = kwargs["action"]
+
+        events.append(action)
+
+        return SimpleNamespace(
+            successful=True,
+            return_code=0,
+        )
+
+    def submitter(**kwargs):
+        events.append("mutation")
+
+        return SimpleNamespace(
+            submitted=True,
+            successful=True,
+            return_code=0,
+        )
 
     def fake_export(**kwargs):
-        export_filenames.append(
-            kwargs["target_filename"]
-        )
+        events.append("export")
 
         return (
             ("mb-scan-command", "export_wl"),
             0,
         )
 
-    file_results = iter(
-        [
-            False,
-            True,
-        ]
-    )
+    def fake_wait_for_file(path, timeout):
+        events.append("stage-ready")
+        return True
+
+    def fake_transport(
+        source,
+        destination,
+        **kwargs,
+    ):
+        events.append("transport")
+
+        destination.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        destination.write_text(
+            "Symbol\nAAPL\nTEMC\n",
+            encoding="utf-8",
+        )
+
+        return destination
 
     monkeypatch.setattr(
         executor_module,
@@ -540,7 +659,13 @@ def test_materialize_retries_verification_export_without_repeating_mutation(
     monkeypatch.setattr(
         executor_module,
         "wait_for_file",
-        lambda path, timeout: next(file_results),
+        fake_wait_for_file,
+    )
+
+    monkeypatch.setattr(
+        executor_module,
+        "transport_staged_file",
+        fake_transport,
     )
 
     monkeypatch.setattr(
@@ -552,26 +677,15 @@ def test_materialize_retries_verification_export_without_repeating_mutation(
         },
     )
 
-    submit_calls = []
-
-    def submitter(**kwargs):
-        submit_calls.append(kwargs)
-
-        return SimpleNamespace(
-            submitted=True,
-            successful=True,
-            return_code=0,
-        )
-
     executor = LiveToSExecutor(
         root=None,
         verification_dir=tmp_path / "verify",
-        wait=30.0,
-        preflight_checker=lambda **kwargs: states.pop(0),
-        control_executor=lambda **kwargs: SimpleNamespace(
-            successful=True,
-            return_code=0,
+        verification_outbox_dir=(
+            tmp_path / "outbox"
         ),
+        wait=30.0,
+        preflight_checker=preflight_checker,
+        control_executor=control_executor,
         output_dir=tmp_path / "output",
         submitter=submitter,
     )
@@ -588,24 +702,14 @@ def test_materialize_retries_verification_export_without_repeating_mutation(
         MaterializationExecutionStatus.OBSERVED
     )
 
-    assert result.observed_state is not None
-    assert result.observed_state.symbols == frozenset(
-        {
-            "AAPL",
-            "TEMC",
-        }
-    )
+    assert events.count("mutation") == 1
+    assert events.count("export") == 1
+    assert events.count("transport") == 1
 
-    # Mutation happens exactly once.
-    assert len(submit_calls) == 1
-
-    # Observation is retried.
-    assert len(export_filenames) == 2
-
-    # Each attempt gets independent evidence.
-    assert (
-        export_filenames[0]
-        != export_filenames[1]
+    assert events.index(
+        "resume_exports"
+    ) < events.index(
+        "transport"
     )
 
 
