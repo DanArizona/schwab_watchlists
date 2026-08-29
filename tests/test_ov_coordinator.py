@@ -314,6 +314,74 @@ def test_select_ov_symbols_excludes_unusable_sources():
     )
 
 
+def test_select_ov_symbols_records_audit_evaluations():
+    source = batch(
+        snapshot("TOP", 1000),
+        snapshot(
+            "NOQUOTE",
+            900,
+            schwab_quote=False,
+        ),
+        snapshot("NEXT", 800),
+        snapshot(
+            "BADOV",
+            None,
+            usable_ov=False,
+        ),
+    )
+
+    result = select_ov_symbols(
+        source,
+        limit=2,
+    )
+
+    by_symbol = {
+        evaluation.symbol: evaluation
+        for evaluation in result.evaluations
+    }
+
+    assert by_symbol["TOP"].ov_rank == 1
+    assert by_symbol["TOP"].eligible_rank == 1
+    assert by_symbol["TOP"].eligible is True
+    assert by_symbol["TOP"].selected is True
+    assert (
+        by_symbol["TOP"].exclusion_reason
+        is None
+    )
+
+    assert by_symbol["NOQUOTE"].ov_rank == 2
+    assert (
+        by_symbol["NOQUOTE"].eligible_rank
+        is None
+    )
+    assert (
+        by_symbol["NOQUOTE"].eligible
+        is False
+    )
+    assert (
+        by_symbol["NOQUOTE"].selected
+        is False
+    )
+    assert (
+        by_symbol["NOQUOTE"].exclusion_reason
+        == "schwab_quote_unavailable"
+    )
+
+    assert by_symbol["NEXT"].ov_rank == 3
+    assert by_symbol["NEXT"].eligible_rank == 2
+    assert by_symbol["NEXT"].selected is True
+
+    assert by_symbol["BADOV"].ov_rank is None
+    assert (
+        by_symbol["BADOV"].eligible_rank
+        is None
+    )
+    assert (
+        by_symbol["BADOV"].exclusion_reason
+        == "ov_decision_unusable"
+    )
+
+
 def test_build_ov_base_intent_creates_daily_base_set():
     source = batch(
         snapshot("NVDA", 900),
@@ -370,6 +438,56 @@ def test_build_ov_base_intent_creates_daily_base_set():
     ] == (
         "NVDA",
         "AAPL",
+    )
+
+
+def test_build_ov_base_intent_accepts_precomputed_selection(
+    monkeypatch,
+):
+    import schwab_watchlists.ov_coordinator as module
+
+    source = batch(
+        snapshot("FNGR", 1000),
+        snapshot("CYAB", 900),
+        snapshot("DUO", 800),
+    )
+
+    selection = select_ov_symbols(
+        source,
+        limit=2,
+    )
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError(
+            "selection should not be recalculated"
+        )
+
+    monkeypatch.setattr(
+        module,
+        "select_ov_symbols",
+        fail_if_called,
+    )
+
+    intent = module.build_ov_base_intent(
+        source,
+        limit=2,
+        intent_id="ov-precomputed",
+        created_at=datetime(
+            2026,
+            8,
+            27,
+            9,
+            25,
+            tzinfo=EASTERN,
+        ),
+        selection=selection,
+    )
+
+    assert intent.metadata[
+        "ranked_symbols"
+    ] == (
+        "FNGR",
+        "CYAB",
     )
 
 

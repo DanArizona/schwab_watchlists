@@ -35,6 +35,26 @@ OV_PRODUCER_ID = "overnight-volume"
 
 
 @dataclass(frozen=True, slots=True)
+class OVDecisionEvaluation:
+    """
+    Audit result for one symbol considered by the OV selector.
+
+    ov_rank is the symbol's rank among all symbols having a usable
+    OV_DECISION, independent of Schwab quote availability.
+
+    eligible_rank is its rank among symbols that satisfy the current
+    selection policy.
+    """
+
+    symbol: str
+    ov_rank: int | None
+    eligible_rank: int | None
+    eligible: bool
+    selected: bool
+    exclusion_reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class OVSelection:
     """
     Minimal POC Overnight Volume selection result.
@@ -46,6 +66,7 @@ class OVSelection:
     selected_symbols: tuple[str, ...]
     eligible_count: int
     excluded_symbols: tuple[str, ...]
+    evaluations: tuple[OVDecisionEvaluation, ...]
 
 
 UTC = timezone.utc
@@ -125,42 +146,116 @@ def select_ov_symbols(
       1. OV_DECISION descending
       2. symbol ascending for deterministic ties
     """
-
     if limit <= 0:
         raise ValueError(
             "OV selection limit must be positive."
         )
 
-    eligible = []
-    excluded = []
-
-    for snapshot in batch.snapshots:
+    usable_ov = [
+        snapshot
+        for snapshot in batch.snapshots
         if (
             snapshot.has_usable_ov_decision
-            and snapshot.has_schwab_quote
             and snapshot.ov_decision is not None
-        ):
-            eligible.append(snapshot)
-        else:
-            excluded.append(snapshot.symbol)
+        )
+    ]
 
-    eligible.sort(
+    usable_ov.sort(
         key=lambda snapshot: (
             -snapshot.ov_decision,
             snapshot.symbol,
         )
     )
 
-    selected = tuple(
+    ov_rank_by_symbol = {
+        snapshot.symbol: rank
+        for rank, snapshot in enumerate(
+            usable_ov,
+            start=1,
+        )
+    }
+
+    eligible = [
+        snapshot
+        for snapshot in usable_ov
+        if snapshot.has_schwab_quote
+    ]
+
+    eligible_rank_by_symbol = {
+        snapshot.symbol: rank
+        for rank, snapshot in enumerate(
+            eligible,
+            start=1,
+        )
+    }
+
+    selected_symbols = tuple(
         snapshot.symbol
         for snapshot in eligible[:limit]
     )
 
+    selected_set = set(
+        selected_symbols
+    )
+
+    evaluations = []
+
+    for snapshot in batch.snapshots:
+        symbol = snapshot.symbol
+
+        if symbol not in ov_rank_by_symbol:
+            eligible_symbol = False
+            exclusion_reason = (
+                "ov_decision_unusable"
+            )
+
+        elif not snapshot.has_schwab_quote:
+            eligible_symbol = False
+            exclusion_reason = (
+                "schwab_quote_unavailable"
+            )
+
+        else:
+            eligible_symbol = True
+            exclusion_reason = None
+
+        evaluations.append(
+            OVDecisionEvaluation(
+                symbol=symbol,
+                ov_rank=(
+                    ov_rank_by_symbol.get(
+                        symbol
+                    )
+                ),
+                eligible_rank=(
+                    eligible_rank_by_symbol.get(
+                        symbol
+                    )
+                ),
+                eligible=eligible_symbol,
+                selected=(
+                    symbol in selected_set
+                ),
+                exclusion_reason=(
+                    exclusion_reason
+                ),
+            )
+        )
+
+    excluded_symbols = tuple(
+        sorted(
+            evaluation.symbol
+            for evaluation in evaluations
+            if not evaluation.eligible
+        )
+    )
+
     return OVSelection(
-        selected_symbols=selected,
+        selected_symbols=selected_symbols,
         eligible_count=len(eligible),
-        excluded_symbols=tuple(
-            sorted(excluded)
+        excluded_symbols=excluded_symbols,
+        evaluations=tuple(
+            evaluations
         ),
     )
 
@@ -181,6 +276,7 @@ def build_ov_base_intent(
     limit: int,
     intent_id: str,
     created_at: datetime,
+    selection: OVSelection | None = None,
 ) -> ProducerIntent:
     """
     Build the day's authoritative Overnight Volume BASE_SET.
@@ -206,10 +302,11 @@ def build_ov_base_intent(
             "DecisionSnapshotBatch trade date in ET."
         )
 
-    selection = select_ov_symbols(
-        batch,
-        limit=limit,
-    )
+    if selection is None:
+        selection = select_ov_symbols(
+            batch,
+            limit=limit,
+        )
 
     if not selection.selected_symbols:
         raise ValueError(

@@ -42,7 +42,6 @@ from scanner_preflight import (
 from watchlist_submission import (
     submit_watchlist_symbols,
 )
-
 from schwab_watchlists.ludp_coordinator import (
     build_ludp_intent,
     reconcile_tos_until_stable,
@@ -50,6 +49,10 @@ from schwab_watchlists.ludp_coordinator import (
 from schwab_watchlists.ov_coordinator import (
     acquire_live_ov_batch,
     build_ov_base_intent,
+    select_ov_symbols,
+)
+from schwab_watchlists.ov_decision_evidence import (
+    write_ov_decision_evidence,
 )
 from schwab_watchlists.tos_coordinator_executor import (
     LiveToSExecutor,
@@ -403,7 +406,19 @@ def build_parser() -> argparse.ArgumentParser:
             "to include in BASE_SET."
         ),
     )
-
+    parser.add_argument(
+        "--ov-evidence-dir",
+        type=Path,
+        default=(
+            Path(__file__).resolve().parent
+            / "output"
+            / "ov_decisions"
+        ),
+        help=(
+            "Directory for durable OV BASE_SET "
+            "decision evidence."
+        ),
+    )
     parser.add_argument(
         "--ecfg",
         type=Path,
@@ -568,6 +583,8 @@ def main() -> int:
         ...
     ] | None = None
 
+    startup_ov_evidence_path: Path | None = None
+
     if startup_mode == "baseline":
         assert args.baseline is not None
 
@@ -675,17 +692,41 @@ def main() -> int:
             )
 
             intent_time = now_et()
+            ov_intent_id = build_ov_intent_id()
+
+            ov_selection = select_ov_symbols(
+                ov_batch,
+                limit=args.ov_limit,
+            )
+
+            startup_ov_evidence_path = (
+                args.ov_evidence_dir
+                .expanduser()
+                .resolve()
+                / (
+                    ov_intent_id
+                    + "-OV-DECISION.jsonl"
+                )
+            )
+
+            write_ov_decision_evidence(
+                startup_ov_evidence_path,
+                intent_id=ov_intent_id,
+                batch=ov_batch,
+                selection=ov_selection,
+                source_watchlist_path=(
+                    ov_watchlist_path
+                ),
+                requested_limit=args.ov_limit,
+            )
 
             startup_intent = (
                 build_ov_base_intent(
                     ov_batch,
                     limit=args.ov_limit,
-                    intent_id=(
-                        build_ov_intent_id()
-                    ),
-                    created_at=(
-                        intent_time
-                    ),
+                    intent_id=ov_intent_id,
+                    created_at=intent_time,
+                    selection=ov_selection,
                 )
             )
 
@@ -786,6 +827,12 @@ def main() -> int:
             + " ".join(
                 startup_ranked_symbols
             )
+        )
+
+    if startup_ov_evidence_path is not None:
+        print(
+            f"OV evidence  : "
+            f"{startup_ov_evidence_path}"
         )
 
     print(
