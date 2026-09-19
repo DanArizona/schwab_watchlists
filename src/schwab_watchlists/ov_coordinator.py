@@ -20,9 +20,6 @@ from mb_market_data.tos_watchlist import (
 )
 
 
-from mb_market_data.decision_batch import (
-    DecisionSnapshotBatch,
-)
 from mb_watchlist_coordinator.models import (
     IntentType,
     ProducerIntent,

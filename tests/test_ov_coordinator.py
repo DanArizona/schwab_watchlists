@@ -314,6 +314,35 @@ def test_select_ov_symbols_excludes_unusable_sources():
     )
 
 
+def test_select_ov_symbols_applies_uni_before_top_n():
+    source = batch(
+        snapshot("OUTSIDE", 2000),
+        snapshot("INSIDE2", 1000),
+        snapshot("INSIDE1", 900),
+    )
+
+    result = select_ov_symbols(
+        source,
+        limit=2,
+        allowed_symbols={"inside1", "INSIDE2"},
+    )
+
+    assert result.selected_symbols == (
+        "INSIDE2",
+        "INSIDE1",
+    )
+    assert result.eligible_count == 2
+    evaluations = {
+        item.symbol: item
+        for item in result.evaluations
+    }
+    assert evaluations["OUTSIDE"].eligible is False
+    assert (
+        evaluations["OUTSIDE"].exclusion_reason
+        == "outside_uni"
+    )
+
+
 def test_select_ov_symbols_records_audit_evaluations():
     source = batch(
         snapshot("TOP", 1000),

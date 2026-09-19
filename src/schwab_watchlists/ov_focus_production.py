@@ -144,19 +144,14 @@ def _require_aware(value: datetime, name: str) -> datetime:
     return value
 
 
-def build_focus_revision(
+def _validate_focus_revision_inputs(
     opening: SamplingHierarchyRevision,
     selection: OVSelection,
     *,
     requested_limit: int,
     generated_at: datetime,
-    opening_proposal_sha256: str,
-    source_watchlist_sha256: str,
-    evidence_sha256: str,
-    decision_ledger_sha256: str,
-    focus_symbols_sha256: str,
-) -> SamplingHierarchyRevision:
-    """Build the first daily OV-derived Focus revision from opening r0."""
+) -> datetime:
+    """Validate the membership transition before any artifact is written."""
 
     generated = _require_aware(generated_at, "generated_at")
     if opening.revision != 0:
@@ -171,6 +166,10 @@ def build_focus_revision(
         raise ValueError("requested_limit must be positive")
     if not selection.selected_symbols:
         raise ValueError("OV selection produced no Focus symbols")
+    if len(selection.selected_symbols) > requested_limit:
+        raise ValueError("OV selection exceeds requested_limit")
+    if len(set(selection.selected_symbols)) != len(selection.selected_symbols):
+        raise ValueError("OV selection contains duplicate symbols")
 
     outside_uni = sorted(
         set(selection.selected_symbols) - set(opening.uni_symbols)
@@ -180,6 +179,29 @@ def build_focus_revision(
             "OV Focus contains symbol(s) outside Uni: "
             + ", ".join(outside_uni)
         )
+    return generated
+
+
+def build_focus_revision(
+    opening: SamplingHierarchyRevision,
+    selection: OVSelection,
+    *,
+    requested_limit: int,
+    generated_at: datetime,
+    opening_proposal_sha256: str,
+    source_watchlist_sha256: str,
+    evidence_sha256: str,
+    decision_ledger_sha256: str,
+    focus_symbols_sha256: str,
+) -> SamplingHierarchyRevision:
+    """Build the first daily OV-derived Focus revision from opening r0."""
+
+    generated = _validate_focus_revision_inputs(
+        opening,
+        selection,
+        requested_limit=requested_limit,
+        generated_at=generated_at,
+    )
 
     metadata = {
         "producer": OV_FOCUS_SOURCE,
@@ -350,6 +372,12 @@ def write_ov_focus_artifacts(
         raise ValueError(
             "DecisionSnapshotBatch trade date differs from opening session"
         )
+    generated = _validate_focus_revision_inputs(
+        opening,
+        selection,
+        requested_limit=requested_limit,
+        generated_at=generated_at,
+    )
     extra_source_symbols = validate_complete_uni_coverage(batch, opening)
 
     root.mkdir(parents=True)
@@ -392,7 +420,6 @@ def write_ov_focus_artifacts(
         "focus_symbols": symbols_path,
         "sampling_hierarchy_r1": proposal_path,
     }
-    generated = _require_aware(generated_at, "generated_at")
     manifest = {
         "production_version": OV_FOCUS_PRODUCTION_VERSION,
         "decision_id": decision_id,
