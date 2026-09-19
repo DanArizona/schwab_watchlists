@@ -225,6 +225,86 @@ Planned OV work includes:
 
 ---
 
+## Daily OV-to-Focus production
+
+`run_ov_focus_production.py` turns the current ToS `OV_DECISION` export into
+the first schema-v2 Focus revision for a trading session. It is a production
+bridge between the current ToS-derived OV model and `mb_market_data`; it does
+not replace the future MasterBot-computed OV model.
+
+The command:
+
+1. loads the already accepted schema-v2 opening `r0` proposal;
+2. requires the same-day ToS export to cover every opening-Uni symbol;
+3. acquires live Schwab quote evidence for every source row;
+4. excludes unusable OV values, unavailable quotes, and symbols outside Uni;
+5. ranks the remaining Uni symbols by `OV_DECISION` descending, then symbol
+   ascending;
+6. selects the explicit top-N Focus `BASE_SET`;
+7. writes immutable decision evidence, a complete decision ledger, the ranked
+   Focus list, a hashed manifest, and `sampling_hierarchy_r1.json`.
+
+It intentionally does **not** publish `r1`. Publication remains a separate
+operator acceptance step in `mb_market_data`.
+
+Prerequisites:
+
+* run before 09:30 ET on the target session date;
+* use the opening `r0` proposal that was already published for that session;
+* use a same-day ToS Watchlist export containing `Symbol` and `OV_DECISION`;
+* ensure the export contains the complete opening Uni; extra rows are allowed
+  but are recorded as `outside_uni` and cannot enter Focus;
+* choose the Focus limit explicitly. The tool has no hidden default.
+
+Example from the `schwab_watchlists` repository root:
+
+```cmd
+set SESSION_DATE=2026-09-21
+set FOCUS_LIMIT=40
+set MARKET_DATA_ROOT=C:\Users\danla\Documents\github\mb_market_data
+set OV_WATCHLIST=C:\Users\danla\Documents\github\stockScans\2026-09-21-OV-WL.csv
+
+python run_ov_focus_production.py ^
+  --watchlist "%OV_WATCHLIST%" ^
+  --opening-proposal "%MARKET_DATA_ROOT%\output\daily_universe_production\%SESSION_DATE%-from-2026-09-18\opening_hierarchy_r0.json" ^
+  --limit %FOCUS_LIMIT%
+```
+
+If the export filename does not contain `YYYY-MM-DD`, add:
+
+```cmd
+--watchlist-date %SESSION_DATE%
+```
+
+A successful run reports `OV Focus production: PASS` and writes:
+
+```text
+output\ov_focus_production\YYYY-MM-DD-HH-MM-SS\
+    ov_decision_evidence.jsonl
+    focus_decision_ledger.csv
+    focus_symbols.csv
+    sampling_hierarchy_r1.json
+    manifest.json
+```
+
+The evidence bundle is deliberately fail-closed. A missing Uni symbol, wrong
+session date, nonempty opening Focus/Hot, empty selection, invalid hierarchy,
+late run, or pre-existing output directory prevents a publishable result.
+
+After reviewing the counts and ledger, publish the generated proposal from
+the `mb_market_data` repository:
+
+```cmd
+python probes\publish_sampling_hierarchy.py ^
+  "output\quote_observation_journal_v2\%SESSION_DATE%.sqlite3" ^
+  "C:\Users\danla\Documents\github\schwab_watchlists\output\ov_focus_production\RUN_TIMESTAMP\sampling_hierarchy_r1.json"
+```
+
+Then use the `mb_market_data` audit and replay tools to verify that `r0` and
+`r1` are both present before starting the schema-v2 Focus poller.
+
+---
+
 # Nasdaq LUDP/M producer
 
 Nasdaq volatility halts are obtained through `mb_market_data`.

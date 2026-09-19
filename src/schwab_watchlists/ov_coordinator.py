@@ -5,7 +5,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Collection
 
 from mb_market_data.decision_batch import (
     DecisionSnapshotBatch,
@@ -20,9 +20,6 @@ from mb_market_data.tos_watchlist import (
 )
 
 
-from mb_market_data.decision_batch import (
-    DecisionSnapshotBatch,
-)
 from mb_watchlist_coordinator.models import (
     IntentType,
     ProducerIntent,
@@ -133,6 +130,7 @@ def select_ov_symbols(
     batch: DecisionSnapshotBatch,
     *,
     limit: int,
+    allowed_symbols: Collection[str] | None = None,
 ) -> OVSelection:
     """
     Select the highest-OV symbols from one decision snapshot batch.
@@ -145,11 +143,32 @@ def select_ov_symbols(
     Ranking:
       1. OV_DECISION descending
       2. symbol ascending for deterministic ties
+
+    When allowed_symbols is supplied, membership eligibility is constrained
+    to that set before the top-N limit is applied. This is used to enforce
+    Focus as a subset of the session's opening Uni.
     """
     if limit <= 0:
         raise ValueError(
             "OV selection limit must be positive."
         )
+
+    if allowed_symbols is None:
+        allowed_symbol_set = None
+    else:
+        normalized_allowed = [
+            str(symbol).strip().upper()
+            for symbol in allowed_symbols
+        ]
+        if any(not symbol for symbol in normalized_allowed):
+            raise ValueError(
+                "allowed_symbols must not contain blank symbols."
+            )
+        allowed_symbol_set = set(normalized_allowed)
+        if not allowed_symbol_set:
+            raise ValueError(
+                "allowed_symbols must contain at least one symbol."
+            )
 
     usable_ov = [
         snapshot
@@ -178,7 +197,13 @@ def select_ov_symbols(
     eligible = [
         snapshot
         for snapshot in usable_ov
-        if snapshot.has_schwab_quote
+        if (
+            snapshot.has_schwab_quote
+            and (
+                allowed_symbol_set is None
+                or snapshot.symbol in allowed_symbol_set
+            )
+        )
     ]
 
     eligible_rank_by_symbol = {
@@ -208,6 +233,13 @@ def select_ov_symbols(
             exclusion_reason = (
                 "ov_decision_unusable"
             )
+
+        elif (
+            allowed_symbol_set is not None
+            and symbol not in allowed_symbol_set
+        ):
+            eligible_symbol = False
+            exclusion_reason = "outside_uni"
 
         elif not snapshot.has_schwab_quote:
             eligible_symbol = False
