@@ -9,9 +9,8 @@ MasterBot Watchlist producers, coordinator integration, and live ThinkOrSwim mat
 > * Overnight Volume (`BASE_SET`);
 > * Nasdaq LUDP/M volatility halts (`ENSURE_PRESENT`);
 > * `mb_watchlist_coordinator` canonical Watchlist state;
-> * protected ThinkOrSwim observation and mutation;
-> * full-target verification;
-> * durable Watchlist-evidence transport and recovery.
+> * outbound ThinkOrSwim display publication;
+> * immutable API OV and Focus decision evidence.
 >
 > Earlier Schwab Market Movers and direct Watchlist-submission workflows remain available.
 
@@ -68,8 +67,7 @@ MasterBot currently runs:
 * Schwab API authentication and quote acquisition;
 * Nasdaq halt polling;
 * Watchlist coordinator logic;
-* ThinkOrSwim command publication;
-* Watchlist evidence transport/recovery.
+* ThinkOrSwim display-command publication.
 
 ## El-Cheapo
 
@@ -79,9 +77,7 @@ El-Cheapo currently runs:
 * `scan_main_v2p0dev0.py`;
 * `scan_command_loop.py`;
 * ThinkOrSwim GUI automation;
-* scheduled Watchlist/scan exports;
-* explicit coordinator Watchlist exports;
-* local verification-evidence staging.
+* display-only Watchlist replacement.
 
 For the current proof of concept, `scan_main_v2p0dev0.py` and `scan_command_loop.py` are separate operator-started processes.
 
@@ -89,31 +85,24 @@ A future production architecture is expected to merge their responsibilities int
 
 ---
 
-# Primary POC data flow
+# Primary data flow
 
-The current live path is:
+The current opening path is:
 
 ```text
-large ToS candidate Watchlist
+opening schema-v2 Uni r0
         |
         v
-current OV_DECISION values
+Schwab five-minute extended-hours candles
         |
-        +--------------------+
-        |                    |
-        v                    v
-mb_market_data         live Schwab quotes
-        |                    |
-        +---------+----------+
+        v
+complete hashed API OV evidence
+        |
+        v
+API OV selection / ranking
                   |
                   v
-       DecisionSnapshotBatch
-                  |
-                  v
-        OV selection / ranking
-                  |
-                  v
-      ProducerIntent(BASE_SET)
+schema-v2 Focus r1 / BASE_SET
                   |
                   v
        WatchlistCoordinator
@@ -138,53 +127,38 @@ ProducerIntent(ENSURE_PRESENT)
        WatchlistCoordinator
                   |
                   v
-        ToS reconciliation
-                  |
-        +---------+---------+
-        |                   |
-        v                   v
-      ADD                REPLACE
-        |                   |
-        +---------+---------+
-                  |
-                  v
-       explicit Watchlist export
-                  |
-                  v
-        full-target verification
+       optional outbound ToS display
+       (submitted, not read back)
 ```
 
 ---
 
 # Overnight Volume producer
 
-The current POC Overnight Volume producer is deliberately simple.
-
-ThinkOrSwim currently calculates the custom Watchlist field:
+Current-day `OV_DECISION` is calculated by `mb_market_data`, not ToS. For each
+opening-Uni symbol, it sums Schwab five-minute extended-hours candle volume
+whose candle start satisfies:
 
 ```text
-OV_DECISION
+00:00 <= candle start < 08:25 ET
 ```
 
-The current MasterBot pipeline then:
+The current pipeline:
 
-1. reads a same-day ToS Watchlist CSV containing `OV_DECISION`;
-2. records the observation time;
-3. fetches live Schwab quote data for those symbols;
-4. builds a `DecisionSnapshotBatch`;
-5. excludes rows without usable `OV_DECISION` or usable Schwab quote data;
-6. ranks eligible symbols by `OV_DECISION` descending;
-7. uses symbol ascending as a deterministic tie-breaker;
-8. selects the requested top N;
-9. publishes that selection to the coordinator as `BASE_SET`.
+1. verifies the exact opening r0 proposal;
+2. acquires one explicit API result for every opening-Uni symbol;
+3. preserves per-symbol status and raw selected candles;
+4. requires complete coverage, zero failures, and completion before 09:30;
+5. ranks `OV_DECISION` descending with symbol ascending as the tiebreaker;
+6. selects the explicit top N and writes the Focus-r1 decision bundle.
 
 Example:
 
 ```text
-~760 candidate symbols
+complete opening Uni
         |
         v
-751 usable OV_DECISION values
+production-eligible API OV bundle
         |
         v
 rank by OV_DECISION
@@ -196,19 +170,19 @@ top 10
 BASE_SET
 ```
 
-The ranking and coordinator bridge live primarily in:
+The current Focus producer lives in:
 
 ```text
-src/schwab_watchlists/ov_coordinator.py
+src/schwab_watchlists/api_ov_focus_production.py
 ```
+
+Legacy ToS-derived OV modules remain for historical tests and evidence. They
+are not used by `run_ov_focus_production.py`.
 
 ## Important current limitation
 
-MasterBot does **not yet independently calculate the full Overnight Volume analytics model**.
-
-The current POC uses the ThinkOrSwim-provided `OV_DECISION` value.
-
-Future work is expected to move the calculation to MasterBot using stored market data and derived historical metrics.
+Current-day API OV is implemented, but the historical feature store and
+3/5/10/30-session comparison statistics remain future work.
 
 Planned OV work includes:
 
@@ -221,27 +195,25 @@ Planned OV work includes:
 * market-cap / shares-outstanding filters;
 * near-open volume metrics;
 * richer ranking and scoring;
-* reduced or eliminated dependence on ThinkOrSwim custom expressions.
+* richer multi-session ranking and scoring.
 
 ---
 
 ## Daily OV-to-Focus production
 
-`run_ov_focus_production.py` turns the current ToS `OV_DECISION` export into
-the first schema-v2 Focus revision for a trading session. It is a production
-bridge between the current ToS-derived OV model and `mb_market_data`; it does
-not replace the future MasterBot-computed OV model.
+`run_ov_focus_production.py` turns a production-eligible `mb_market_data` API
+OV bundle into the first schema-v2 Focus revision for a trading session.
 
 The command:
 
 1. loads the already accepted schema-v2 opening `r0` proposal;
-2. requires the same-day ToS export to cover every opening-Uni symbol;
-3. acquires live Schwab quote evidence for every source row;
-4. excludes unusable OV values, unavailable quotes, and symbols outside Uni;
-5. ranks the remaining Uni symbols by `OV_DECISION` descending, then symbol
+2. verifies source hashes, session, decision window, completion time, and exact
+   opening-Uni coverage;
+3. rejects partial, failed, late, or smoke-test API bundles;
+4. ranks the Uni symbols by API `OV_DECISION` descending, then symbol
    ascending;
-6. selects the explicit top-N Focus `BASE_SET`;
-7. writes immutable decision evidence, a complete decision ledger, the ranked
+5. selects the explicit top-N Focus `BASE_SET`;
+6. writes a complete decision ledger, the ranked
    Focus list, a hashed manifest, and `sampling_hierarchy_r1.json`.
 
 It intentionally does **not** publish `r1`. Publication remains a separate
@@ -251,9 +223,8 @@ Prerequisites:
 
 * run before 09:30 ET on the target session date;
 * use the opening `r0` proposal that was already published for that session;
-* use a same-day ToS Watchlist export containing `Symbol` and `OV_DECISION`;
-* ensure the export contains the complete opening Uni; extra rows are allowed
-  but are recorded as `outside_uni` and cannot enter Focus;
+* use a production-eligible API OV manifest created from that exact r0;
+* ensure the API bundle covers exactly the complete opening Uni;
 * choose the Focus limit explicitly. The tool has no hidden default.
 
 Example from the `schwab_watchlists` repository root:
@@ -262,34 +233,28 @@ Example from the `schwab_watchlists` repository root:
 set SESSION_DATE=2026-09-21
 set FOCUS_LIMIT=40
 set MARKET_DATA_ROOT=C:\Users\danla\Documents\github\mb_market_data
-set OV_WATCHLIST=C:\Users\danla\Documents\github\stockScans\2026-09-21-OV-WL.csv
+set API_OV_MANIFEST=%MARKET_DATA_ROOT%\output\api_overnight_volume\RUN_TIMESTAMP-session-%SESSION_DATE%\manifest.json
 
 python run_ov_focus_production.py ^
-  --watchlist "%OV_WATCHLIST%" ^
+  --api-ov-manifest "%API_OV_MANIFEST%" ^
   --opening-proposal "%MARKET_DATA_ROOT%\output\daily_universe_production\%SESSION_DATE%-from-2026-09-18\opening_hierarchy_r0.json" ^
   --limit %FOCUS_LIMIT%
 ```
 
-If the export filename does not contain `YYYY-MM-DD`, add:
-
-```cmd
---watchlist-date %SESSION_DATE%
-```
-
-A successful run reports `OV Focus production: PASS` and writes:
+A successful run reports `API OV Focus production: PASS` and writes:
 
 ```text
 output\ov_focus_production\YYYY-MM-DD-HH-MM-SS\
-    ov_decision_evidence.jsonl
     focus_decision_ledger.csv
     focus_symbols.csv
     sampling_hierarchy_r1.json
     manifest.json
 ```
 
-The evidence bundle is deliberately fail-closed. A missing Uni symbol, wrong
-session date, nonempty opening Focus/Hot, empty selection, invalid hierarchy,
-late run, or pre-existing output directory prevents a publishable result.
+The bundle is fail-closed. A hash mismatch, missing/extra Uni symbol, wrong
+session or decision window, non-production source, late run, invalid hierarchy,
+or pre-existing output directory prevents a publishable result. This command
+does not authenticate to Schwab and does not read ToS.
 
 After reviewing the counts and ledger, publish the generated proposal from
 the `mb_market_data` repository:
@@ -344,7 +309,9 @@ acknowledged
 
 A halt is not acknowledged merely because the Nasdaq feed contained it.
 
-The symbol is acknowledged only after downstream coordinator/ThinkOrSwim reconciliation succeeds.
+The symbol is acknowledged only after downstream authoritative coordinator
+and journal membership succeeds. ToS display state is not an acknowledgment
+source.
 
 If reconciliation fails, the halt remains pending for a later attempt.
 
@@ -457,164 +424,40 @@ The Nasdaq polling interval currently has a minimum of 60 seconds.
 
 ---
 
-# ThinkOrSwim reconciliation
+# ThinkOrSwim display-only publication
 
-The live ThinkOrSwim executor is implemented in:
+ToS is an optional outbound display adapter. The accepted Focus roster may be
+submitted with `replace_wl_symbols`; it is not observed, reconciled, or read
+back. No ToS CSV is required for OV calculation, Focus selection, or adapter
+verification.
 
-```text
-src/schwab_watchlists/tos_coordinator_executor.py
-```
+In display-only mode the El-Cheapo command loop:
 
-It works with `mb_watchlist_coordinator` to perform:
+* persistently suspends scheduled exports;
+* rejects `export_wl`, `add_wl_symbols`, and `resume_exports`;
+* permits lifecycle commands and `replace_wl_symbols`;
+* reports a completed replacement as submitted/unverified.
 
-```text
-OBSERVE
-NO_OP
-ADD
-REPLACE
-```
-
-A typical replacement cycle is:
-
-```text
-suspend scheduled exports
-        |
-        v
-observe current Watchlist
-        |
-        v
-resume exports
-        |
-        v
-planner decides REPLACE
-        |
-        v
-suspend scheduled exports
-        |
-        v
-replace Watchlist symbols
-        |
-        v
-explicit verification export
-        |
-        v
-resume scheduled exports
-        |
-        v
-transport evidence
-        |
-        v
-full-target verification
-```
-
-The coordinator considers a mutation successful only when the complete observed Watchlist matches the complete target.
-
-That means both of these are checked:
-
-```text
-missing symbols
-unexpected symbols
-```
-
-A command being accepted by El-Cheapo is not sufficient proof of success.
-
----
-
-# Protected Watchlist observation
-
-Diagnostic protected observations can be run with:
+Example after the Focus bundle has been accepted:
 
 ```cmd
-python probe_tos_coordinator_observe.py
+powershell -NoProfile -Command "$s=@((Import-Csv '%OV_R1_DIR%\focus_symbols.csv').symbol); & mb-scan-command replace_wl_symbols --symbols $s --wait 120; exit $LASTEXITCODE"
+mb-scan-status
 ```
 
-The observation path:
+Do not request an export afterward. ToS display state cannot block canonical
+membership, r1 publication, API polling, or journal acceptance.
 
-```text
-suspend scheduled exports
-        |
-        v
-explicit export_wl
-        |
-        v
-wait for local staged evidence
-        |
-        v
-resume scheduled exports
-        |
-        v
-transport evidence to MasterBot
-        |
-        v
-parse observed Watchlist
-```
-
-Observation does not mutate Watchlist membership.
-
-The probe is currently a development diagnostic and is not installed as a console command.
+The older observation, reconciliation, verification-export, transport, and
+outbox-recovery modules remain in the repository as historical POC code. They
+are not part of the display-only operating path.
 
 ---
 
-# Evidence transport
+# Legacy Watchlist evidence recovery
 
-Coordinator verification exports are intentionally separated into two phases:
-
-```text
-ThinkOrSwim / GUI phase
-```
-
-and:
-
-```text
-LAN transport phase
-```
-
-El-Cheapo first produces the CSV locally.
-
-The verification file is then staged locally in the scanner-control outbox.
-
-Conceptually:
-
-```text
-ThinkOrSwim export
-        |
-        v
-El-Cheapo local scan file
-        |
-        v
-El-Cheapo local verification outbox
-        |
-        v
-MasterBot transport
-        |
-        v
-MasterBot verification directory
-```
-
-Current paths typically resemble:
-
-```text
-El-Cheapo local export:
-C:\Users\DanLa\Documents\github\stockScans\<file>.csv
-
-El-Cheapo verification outbox:
-C:\Users\DanLa\Documents\github\stockScans_control\
-    outgoing\watchlist_verify\<file>.csv
-
-MasterBot view of outbox:
-\\El-Cheapo\SCANCTRL\outgoing\watchlist_verify\<file>.csv
-
-MasterBot final evidence:
-%MB_SCANS%\watchlist_verify\<file>.csv
-```
-
-This design prevents a slow or failed LAN copy from unnecessarily keeping ThinkOrSwim GUI operations suspended.
-
----
-
-# Watchlist evidence recovery
-
-A durable outbox allows evidence to survive temporary transport failures.
+This retained POC utility is not used by the display-only adapter path. It
+allowed historical verification evidence to survive transport failures.
 
 The recovery command is:
 
@@ -670,7 +513,7 @@ Temporary transport files use caller-unique names and are atomically renamed int
 
 ## El-Cheapo
 
-For the current POC, manually start:
+For the current display-only adapter operation, manually start:
 
 ```text
 scan_main_v2p0dev0.py
@@ -934,13 +777,13 @@ where mb-wl-recovery
 Run the complete suite:
 
 ```cmd
-pytest -q
+pytest -q tests
 ```
 
 or:
 
 ```cmd
-python -m pytest -q
+python -m pytest -q tests
 ```
 
 The tests cover both older candidate-generation workflows and newer coordinator/ToS integration components.
@@ -953,8 +796,7 @@ Important areas include:
 * LUDP intent generation;
 * LUDP pending/acknowledgment behavior;
 * OV ranking and `BASE_SET` generation;
-* ToS reconciliation;
-* protected observation;
+* legacy ToS reconciliation and protected-observation behavior;
 * live executor behavior;
 * transport retries;
 * concurrency-safe evidence delivery;
@@ -979,27 +821,31 @@ LUDP/M producer ── ENSURE_PRESENT ─────┘
                                       ToS
 ```
 
-The Overnight Volume side has been demonstrated live:
+The earlier ToS-derived Overnight Volume side was demonstrated live. The new
+API-only opening path is implemented and awaiting its first live session:
 
 ```text
-current ToS OV_DECISION
+complete opening Uni
         +
-live Schwab quotes
+Schwab five-minute candles
+        |
+        v
+production-eligible API OV evidence
         |
         v
 top-N selection
         |
         v
-BASE_SET
+schema-v2 Focus r1 / BASE_SET
         |
         v
-ToS reconciliation
-        |
-        v
-full-target verified
+optional ToS display submission
+(unverified; no readback)
 ```
 
-The remaining combined POC milestone is to observe a genuinely new Nasdaq LUDP/M event after startup and verify that the halt symbol is added on top of the OV-derived Watchlist through the same coordinator.
+The next OV milestone is a live API-only opening. The remaining combined POC
+milestone is a genuinely new Nasdaq LUDP/M event reflected in authoritative
+canonical/journal membership; ToS readback is not required.
 
 ---
 
@@ -1021,7 +867,6 @@ Important post-POC work includes:
 
 ## Overnight Volume
 
-* MasterBot-computed overnight volume;
 * historical data store;
 * 3/5/10/30-day medians;
 * 3/5/10/30-day maxima;
@@ -1119,13 +964,15 @@ ensure these symbols are present
 
 Neither producer decides the GUI operation.
 
-## Full-target verification
+## Authoritative membership verification
 
-Success means the complete observed Watchlist equals the complete desired target.
+Success is established from canonical hierarchy and journal state. ToS is an
+unverified display projection and is not read back.
 
-## Unknown outcomes stay unknown
+## Display outcomes remain unverified
 
-An uncertain GUI mutation is not blindly repeated.
+A completed ToS command is reported as submitted/unverified. It does not alter
+the authoritative decision or trigger CSV verification.
 
 ## GUI work and network transport are separate
 
@@ -1162,12 +1009,15 @@ Owns reusable market-data acquisition, including:
 * Nasdaq halt data;
 * Schwab quotes;
 * Schwab price-history probes;
-* ToS decision snapshots;
+* current-day API OV evidence;
+* legacy ToS decision snapshots;
 * future historical Overnight Volume infrastructure.
 
 ## ToS_scanner
 
-Runs on El-Cheapo and owns ThinkOrSwim GUI automation, exports, Watchlist mutation, and scanner command handling.
+Runs on El-Cheapo and owns display-only ThinkOrSwim GUI automation, outbound
+Watchlist replacement, and scanner command handling. Export/readback is
+disabled in the current operating mode.
 
 ## mb_tools
 
@@ -1185,7 +1035,7 @@ Provides shared MasterBot utilities including:
 
 * The project is still a proof of concept.
 * ThinkOrSwim mutation depends on GUI automation.
-* The current OV POC depends on the ToS `OV_DECISION` custom column.
+* The API-only OV opening path has not yet completed its first live session.
 * `mb-scan-status` does not currently independently prove that both El-Cheapo scanner processes are alive.
 * Full restart recovery is not complete.
 * Current source-priority and Watchlist-size policy are intentionally simple.
