@@ -7,6 +7,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -200,11 +201,16 @@ def test_writes_publishable_r1_and_durable_decision_artifacts(tmp_path):
         schema_version=HIERARCHY_SCHEMA_VERSION,
     )
     store.initialize()
-    assert store.record_membership_revision(r0) is RecordResult.INSERTED
-    assert (
-        store.record_membership_revision(loaded)
-        is RecordResult.INSERTED
-    )
+    publication_time = datetime(2026, 9, 21, 13, 29, tzinfo=UTC)
+    with patch(
+        "mb_market_data.quote_observation_store._utc_now",
+        return_value=publication_time,
+    ):
+        assert store.record_membership_revision(r0) is RecordResult.INSERTED
+        assert (
+            store.record_membership_revision(loaded)
+            is RecordResult.INSERTED
+        )
     revisions = store.membership_revisions_in_effective_order()
     assert [revision.revision for revision in revisions] == [0, 1]
     effective = store.latest_membership_revision_effective_at(

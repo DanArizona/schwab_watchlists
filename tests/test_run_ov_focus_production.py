@@ -1,35 +1,13 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
-
-import pytest
 
 import run_ov_focus_production as module
 
 
 ET = ZoneInfo("America/New_York")
-
-
-def test_resolve_source_date_uses_filename_date():
-    assert module.resolve_source_date(
-        Path("2026-09-21-08-20-00-WL.csv"),
-        None,
-    ) == date(2026, 9, 21)
-
-
-def test_resolve_source_date_requires_date_for_undated_filename():
-    with pytest.raises(ValueError, match="supply --watchlist-date"):
-        module.resolve_source_date(Path("Watchlist.csv"), None)
-
-
-def test_resolve_source_date_rejects_conflicting_explicit_date():
-    with pytest.raises(ValueError, match="differs from filename"):
-        module.resolve_source_date(
-            Path("2026-09-20-Watchlist.csv"),
-            date(2026, 9, 21),
-        )
 
 
 def test_default_output_dir_uses_eastern_timestamp():
@@ -43,3 +21,11 @@ def test_default_output_dir_uses_eastern_timestamp():
         / "ov_focus_production"
         / "2026-09-21-08-25-30"
     )
+
+
+def test_decision_id_identifies_api_ov_source():
+    observed = datetime(2026, 9, 21, 8, 25, 30, tzinfo=ET)
+
+    decision_id = module.build_decision_id(observed)
+
+    assert decision_id.startswith("api-ov-focus-20260921-082530-")
