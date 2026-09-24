@@ -63,7 +63,7 @@ def write_opening(path: Path) -> SamplingHierarchyRevision:
 
 
 def observation(symbol: str, volume: int) -> APIOvernightVolumeObservation:
-    start = datetime(2026, 9, 21, 12, 25, tzinfo=UTC)
+    start = datetime(2026, 9, 21, 13, 5, tzinfo=UTC)
     candle = APIOvernightVolumeCandle(
         start_et=datetime(2026, 9, 21, 7, 0, tzinfo=ET),
         open=1.0,
@@ -76,7 +76,7 @@ def observation(symbol: str, volume: int) -> APIOvernightVolumeObservation:
         symbol=symbol,
         trade_date=SESSION_DATE,
         window_start_et=datetime(2026, 9, 21, 0, 0, tzinfo=ET),
-        window_end_et=datetime(2026, 9, 21, 8, 25, tzinfo=ET),
+        window_end_et=datetime(2026, 9, 21, 9, 0, tzinfo=ET),
         status=APIOvernightVolumeStatus.OK,
         ov_decision=volume,
         candle_count=1,
@@ -96,7 +96,7 @@ def write_source_bundle(
     *,
     complete: bool = True,
 ) -> Path:
-    start = datetime(2026, 9, 21, 12, 25, tzinfo=UTC)
+    start = datetime(2026, 9, 21, 13, 5, tzinfo=UTC)
     observations = (
         observation("AAAA", 100),
         observation("BBBB", 300),
@@ -173,6 +173,44 @@ def test_rejects_bundle_not_marked_complete_for_opening_uni(tmp_path):
     )
 
     with pytest.raises(ValueError, match="complete_opening_uni"):
+        load_api_ov_evidence(
+            source_manifest,
+            opening_proposal_path=opening_path,
+        )
+
+
+def test_rejects_superseded_0825_decision_window(tmp_path):
+    opening_path = tmp_path / "opening.json"
+    opening = write_opening(opening_path)
+    source_manifest = write_source_bundle(
+        tmp_path / "api-ov", opening_path, opening
+    )
+    manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
+    manifest["window_end_et"] = "2026-09-21T08:25:00-04:00"
+    source_manifest.write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="unexpected decision window"):
+        load_api_ov_evidence(
+            source_manifest,
+            opening_proposal_path=opening_path,
+        )
+
+
+def test_rejects_acquisition_started_before_0900_cutoff(tmp_path):
+    opening_path = tmp_path / "opening.json"
+    opening = write_opening(opening_path)
+    source_manifest = write_source_bundle(
+        tmp_path / "api-ov", opening_path, opening
+    )
+    manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
+    manifest["started_at_utc"] = "2026-09-21T12:59:59Z"
+    source_manifest.write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="before the decision window closed"):
         load_api_ov_evidence(
             source_manifest,
             opening_proposal_path=opening_path,

@@ -140,8 +140,14 @@ opening-Uni symbol, it sums Schwab five-minute extended-hours candle volume
 whose candle start satisfies:
 
 ```text
-00:00 <= candle start < 08:25 ET
+00:00 <= candle start < 09:00 ET
 ```
+
+The 09:00 production cutoff was adopted after the September 24 retrospective
+study improved top-40 agreement with `OV_FINAL` from 33/40 at 08:25 to 38/40
+at 09:00 while retaining 30 minutes for acquisition, review, publication, and
+poller startup. Focus remains 40 symbols while Hot-promotion evidence and
+additional sessions accumulate.
 
 The current pipeline:
 
@@ -207,8 +213,8 @@ OV bundle into the first schema-v2 Focus revision for a trading session.
 The command:
 
 1. loads the already accepted schema-v2 opening `r0` proposal;
-2. verifies source hashes, session, decision window, completion time, and exact
-   opening-Uni coverage;
+2. verifies source hashes, session, decision window, acquisition timing, and
+   exact opening-Uni coverage;
 3. rejects partial, failed, late, or smoke-test API bundles;
 4. ranks the Uni symbols by API `OV_DECISION` descending, then symbol
    ascending;

@@ -23,7 +23,7 @@ API_OV_FOCUS_VERSION = "api-ov-focus-production-v1"
 API_OV_FOCUS_SOURCE = "overnight-volume-api-v1"
 SELECTION_POLICY = "OV_DECISION_DESC_SYMBOL_ASC"
 EXPECTED_WINDOW_START = time(0, 0)
-EXPECTED_WINDOW_END = time(8, 25)
+EXPECTED_WINDOW_END = time(9, 0)
 EXPECTED_FREQUENCY_MINUTES = 5
 OBSERVATION_FIELDS = (
     "symbol",
@@ -342,6 +342,13 @@ def load_api_ov_evidence(
     )
     if window_start != expected_start or window_end != expected_end:
         raise ValueError("API OV evidence has unexpected decision window")
+    started_at = _aware_datetime(
+        manifest.get("started_at_utc"), "started_at_utc"
+    ).astimezone(UTC)
+    if started_at < expected_end.astimezone(UTC):
+        raise ValueError(
+            "API OV acquisition started before the decision window closed"
+        )
     completed_at = _aware_datetime(
         manifest.get("completed_at_utc"), "completed_at_utc"
     ).astimezone(UTC)
